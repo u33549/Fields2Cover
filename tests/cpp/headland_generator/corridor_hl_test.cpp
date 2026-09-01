@@ -10,6 +10,8 @@
 #include "fields2cover/decomposition/trapezoidal_decomp.h"
 #include "fields2cover/headland_generator/constant_headland.h"
 #include "fields2cover/headland_generator/corridor_headland.h"
+#include "fields2cover/path_planning/dubins_curves.h"
+#include "fields2cover/path_planning/reeds_shepp_curves.h"
 
 TEST(fields2cover_hl_corridor_gen, onlyBetweenTouchingCells) {
   f2c::hg::CorridorHL corridor;
@@ -313,4 +315,142 @@ TEST(fields2cover_hl_corridor_gen, sharesTreatACornerAsNoBorder) {
     EXPECT_NEAR(s.share, 0.5, 1e-9);
     EXPECT_NEAR(s.shared_length, r, 1e-2) << "cells " << s.cell_i << "-" << s.cell_k;
   }
+}
+
+// Two 100x50 cells sharing the whole y=50 border. Same perimeter, so each
+// gives half of whatever the corridor turns out to need.
+namespace {
+F2CCells twoCellsSharingAHorizontalBorder() {
+  F2CCells cells;
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(0,0), F2CPoint(100,0), F2CPoint(100,50),
+      F2CPoint(0,50), F2CPoint(0,0)})));
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(0,50), F2CPoint(100,50), F2CPoint(100,100),
+      F2CPoint(0,100), F2CPoint(0,50)})));
+  return cells;
+}
+
+// A planner that cannot turn at all, to stand in for one that fails on a
+// turn it is handed.
+class NoTurnPlanner : public f2c::pp::TurningBase {
+ public:
+  F2CPath createSimpleTurn(const F2CRobot&, double, double, double) override {
+    return F2CPath();
+  }
+};
+}  // namespace
+
+TEST(fields2cover_hl_corridor_gen, turnExtentIsOneRadiusWhenTheSwathsLeaveRoom) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  // Swaths 10 m apart with a 2 m turning radius leave room to spare, so the
+  // turn is two quarter circles joined by a straight and only reaches one
+  // radius past the swath ends -- half of what the classic bound assumes.
+  EXPECT_NEAR(corridor.turnExtent(robot, dubins),
+      robot.getMinTurningRadius(), 1e-2);
+  EXPECT_LT(corridor.turnExtent(robot, dubins),
+      2.0 * robot.getMinTurningRadius());
+}
+
+TEST(fields2cover_hl_corridor_gen, turnExtentPassesTheBoundWhereTheTurnHasToLoop) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CRobot robot(2.0, 6.0);
+  robot.setMinTurningRadius(5.0);
+  const double r = robot.getMinTurningRadius();
+  const double d = robot.getCovWidth();
+
+  // Swaths closer together than twice the radius leave the turn no room to
+  // join them directly: it loops, and reaches r + sqrt(4r^2 - (d/2 + r)^2)
+  // past their ends -- further than the classic bound of twice the radius,
+  // which is the case that bound gets wrong.
+  const double loop = r + std::sqrt(4.0 * r * r - std::pow(0.5 * d + r, 2));
+  EXPECT_GT(loop, 2.0 * r);
+  EXPECT_NEAR(corridor.turnExtent(robot, dubins), loop, 1e-2);
+}
+
+TEST(fields2cover_hl_corridor_gen, turnExtentIsZeroForATurnThatBacksUp) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::ReedsSheppCurves reeds_shepp;
+  F2CRobot robot(2.0, 2.0);
+  robot.setMinTurningRadius(5.0);
+
+  // Reeds-Shepp may back up rather than drive round, and then the turn never
+  // reaches past the end of the swaths at all. That is an answer, not a
+  // failure: no room is needed there.
+  EXPECT_NEAR(corridor.turnExtent(robot, reeds_shepp), 0.0, 1e-2);
+}
+
+TEST(fields2cover_hl_corridor_gen, turnExtentFallsBackOnTheBoundWithoutATurn) {
+  f2c::hg::CorridorHL corridor;
+  NoTurnPlanner no_turn;
+  F2CRobot robot(2.0, 6.0);
+  robot.setMinTurningRadius(5.0);
+
+  // Nothing came back to measure, so the classic bound stands.
+  EXPECT_NEAR(corridor.turnExtent(robot, no_turn),
+      2.0 * robot.getMinTurningRadius(), 1e-9);
+}
+
+TEST(fields2cover_hl_corridor_gen, corridorIsAsDeepAsThePlannedTurn) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CCells cells = twoCellsSharingAHorizontalBorder();
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  // The corridor over the 100 m border is the turn's reach plus half the
+  // robot, and the two cells are the same size so each gives half of it.
+  const double width =
+      corridor.turnExtent(robot, dubins) + 0.5 * robot.getWidth();
+  F2CCells carved = corridor.generateHeadlands(cells, robot, dubins);
+  EXPECT_EQ(carved.size(), 2);
+  EXPECT_NEAR(cells.area() - carved.area(), 100 * width, 1e-2);
+  EXPECT_NEAR(carved.getGeometry(0).area(), 100 * (50 - 0.5 * width), 1e-2);
+}
+
+TEST(fields2cover_hl_corridor_gen, dropsAPieceNarrowerThanTheImplement) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CRobot robot(1.0, 4.0);   // body 1 m, implement 4 m
+  robot.setMinTurningRadius(1.0);
+
+  // Two groups of three stacked cells, far enough apart to share no border.
+  // The middle band of each group is the smallest of its group, so it gives
+  // up the whole corridor on both of its borders.
+  //   band of  5 m -> 2 m left: narrower than the implement, and wider than
+  //                    the body, so only the implement's width can decide it
+  //   band of  9 m -> 6 m left: wide enough to cover, and must survive
+  auto band = [](double x0, double y0, double y1) {
+    return F2CCell(F2CLinearRing({
+        F2CPoint(x0, y0), F2CPoint(x0 + 100, y0), F2CPoint(x0 + 100, y1),
+        F2CPoint(x0, y1), F2CPoint(x0, y0)}));
+  };
+  F2CCells cells;
+  cells.addGeometry(band(0, 0, 50));
+  cells.addGeometry(band(0, 50, 55));     // 5 m
+  cells.addGeometry(band(0, 55, 105));
+  cells.addGeometry(band(200, 0, 50));
+  cells.addGeometry(band(200, 50, 59));   // 9 m
+  cells.addGeometry(band(200, 59, 109));
+
+  const double width =
+      corridor.turnExtent(robot, dubins) + 0.5 * robot.getWidth();
+  ASSERT_NEAR(width, 1.5, 1e-2);
+
+  F2CCells carved = corridor.generateHeadlands(cells, robot, dubins);
+  // The 2 m band is gone; the 6 m one is not.
+  EXPECT_EQ(carved.size(), 5);
+  EXPECT_NEAR(carved.area(), 4 * 100 * 50 + 100 * 6, 1e-2);
+  double thinnest = 1e9;
+  for (size_t i = 0; i < carved.size(); ++i) {
+    thinnest = std::min(thinnest, carved.getGeometry(i).area() / 100.0);
+    EXPECT_GT(F2CCells::buffer(
+        carved.getGeometry(i), -0.5 * robot.getCovWidth()).area(), 0.0);
+  }
+  EXPECT_NEAR(thinnest, 6.0, 1e-2);
 }

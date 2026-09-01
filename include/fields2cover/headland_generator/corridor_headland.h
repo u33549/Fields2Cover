@@ -11,6 +11,7 @@
 #include <vector>
 #include "fields2cover/types.h"
 #include "fields2cover/headland_generator/headland_generator_base.h"
+#include "fields2cover/path_planning/turning_base.h"
 
 namespace f2c::hg {
 
@@ -81,6 +82,36 @@ class CorridorHL : public HeadlandGeneratorBase {
 
   /// Rule generateHeadlands() currently uses to split the corridor.
   CorridorShareMode getShareMode() const;
+
+  /// Open a corridor as wide as the turn the planner actually makes.
+  ///
+  /// The corridor is where a turn at the end of a swath is driven, so it has
+  /// to be as deep as that turn reaches. Twice the turning radius is only a
+  /// bound: with the swaths far enough apart the turn reaches one radius out,
+  /// and with them closer together than twice the radius it has to loop and
+  /// reaches further than the bound allows for.
+  ///
+  /// A piece left narrower than the robot's coverage width is given to the
+  /// corridor instead of returned: nothing can cover it without the implement
+  /// hanging over the corridor anyway.
+  /// @param field Cells that share borders, usually from a decomposition.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @return Mainland area
+  F2CCells generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn);
+
+  /// How far a turn between two neighbouring swaths reaches past their ends.
+  ///
+  /// This is what a border the swaths end on has to leave room for. It is not
+  /// twice the turning radius: with room to spare the turn only reaches one
+  /// radius out, and with the swaths closer together than that the turn has to
+  /// loop and reaches further than two. A turn that backs up instead of
+  /// driving round reaches no distance at all.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @return Distance the turn reaches past the end of the swaths
+  double turnExtent(const F2CRobot& robot, f2c::pp::TurningBase& turn) const;
 
   /// Open a corridor wide enough for \a n_swaths passes.
   /// @param field Borders of the field and the obstacles on it.

@@ -71,9 +71,10 @@ CorridorShareMode CorridorHL::getShareMode() const {
   return share_mode_;
 }
 
-F2CCells CorridorHL::generateHeadlands(
-    const F2CCells& field, double dist_headland) {
-  const std::vector<CorridorShare> shares = corridorShares(field, share_mode_);
+namespace {
+// Take each cell's part of every corridor out of it.
+F2CCells carveCorridors(const F2CCells& field,
+    const std::vector<CorridorShare>& shares, double width, double spur) {
   F2CCells carved;
   for (size_t i = 0; i < field.size(); ++i) {
     F2CCells cell {field.getGeometry(i)};
@@ -83,17 +84,67 @@ F2CCells CorridorHL::generateHeadlands(
       }
       for (size_t j = 0; j < share.shared_border.size(); ++j) {
         cell = cell.difference(F2CCells::buffer(
-            share.shared_border.getGeometry(j), dist_headland * share.share));
+            share.shared_border.getGeometry(j), width * share.share));
       }
     }
     // The difference can leave a zero-width spur behind. Opening the result by
     // a hair drops it without moving any real edge.
-    const F2CCells clean = cell.buffer(-spur_).buffer(spur_);
+    const F2CCells clean = cell.buffer(-spur).buffer(spur);
     for (size_t j = 0; j < clean.size(); ++j) {
       carved.addGeometry(clean.getGeometry(j));
     }
   }
   return carved;
+}
+}  // namespace
+
+double CorridorHL::turnExtent(
+    const F2CRobot& robot, f2c::pp::TurningBase& turn) const {
+  // Lay the ends of two neighbouring swaths on the x axis and turn from one
+  // into the other. How far the turn reaches is the highest point it drives
+  // to, which is the room a border the swaths end on has to leave.
+  const F2CPath path = turn.createTurn(robot,
+      F2CPoint(0.0, 0.0), M_PI_2,
+      F2CPoint(robot.getCovWidth(), 0.0), -M_PI_2);
+  // A planner that cannot join the two swaths says nothing about the width,
+  // so fall back on the bound taken without one. A planner that joins them
+  // without reaching past their ends is a different matter: a turn that backs
+  // up instead of driving round needs no room there, and saying so is the
+  // point of asking.
+  if (path.size() == 0) {
+    return 2.0 * robot.getMinTurningRadius();
+  }
+  double extent = 0.0;
+  for (const auto& state : path.getStates()) {
+    extent = std::max(extent, state.point.getY());
+  }
+  return extent;
+}
+
+F2CCells CorridorHL::generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot,
+    f2c::pp::TurningBase& turn) {
+  const F2CCells carved = generateHeadlands(
+      field, turnExtent(robot, turn) + 0.5 * robot.getWidth());
+  // Carving a corridor out of both sides of a thin cell can leave a strip
+  // narrower than the implement. Nothing can cover such a strip without the
+  // implement hanging over the corridor, and a swath generator handed one
+  // cuts it into fragments the route then joins with a turn each. Leave it
+  // to the corridor rather than call it mainland.
+  F2CCells wide;
+  for (size_t i = 0; i < carved.size(); ++i) {
+    const F2CCell piece = carved.getGeometry(i);
+    if (F2CCells::buffer(piece, -0.5 * robot.getCovWidth()).area() > 0.0) {
+      wide.addGeometry(piece);
+    }
+  }
+  return wide;
+}
+
+F2CCells CorridorHL::generateHeadlands(
+    const F2CCells& field, double dist_headland) {
+  return carveCorridors(
+      field, corridorShares(field, share_mode_), dist_headland, spur_);
 }
 
 F2CCells CorridorHL::generateHeadlandArea(
