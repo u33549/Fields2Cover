@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
+#include <stdexcept>
 #include <vector>
 #include "fields2cover/headland_generator/corridor_headland.h"
 
@@ -72,9 +74,12 @@ CorridorShareMode CorridorHL::getShareMode() const {
 }
 
 namespace {
-// Take each cell's part of every corridor out of it.
+// Take each cell's part of every corridor out of it. width_of gives the
+// full width of one border segment, before the cell's share of it is taken.
 F2CCells carveCorridors(const F2CCells& field,
-    const std::vector<CorridorShare>& shares, double width, double spur) {
+    const std::vector<CorridorShare>& shares,
+    const std::function<double(const CorridorShare&, size_t)>& width_of,
+    double spur) {
   F2CCells carved;
   for (size_t i = 0; i < field.size(); ++i) {
     F2CCells cell {field.getGeometry(i)};
@@ -84,7 +89,8 @@ F2CCells carveCorridors(const F2CCells& field,
       }
       for (size_t j = 0; j < share.shared_border.size(); ++j) {
         cell = cell.difference(F2CCells::buffer(
-            share.shared_border.getGeometry(j), width * share.share));
+            share.shared_border.getGeometry(j),
+            width_of(share, j) * share.share));
       }
     }
     // The difference can leave a zero-width spur behind. Opening the result by
@@ -95,6 +101,20 @@ F2CCells carveCorridors(const F2CCells& field,
     }
   }
   return carved;
+}
+
+// Nothing can cover a piece narrower than the implement without it hanging
+// over the corridor, and a swath generator handed one cuts it into fragments
+// the route then joins with a turn each. Leave it to the corridor instead.
+F2CCells dropNarrowerThanImplement(const F2CCells& carved, double cov_width) {
+  F2CCells wide;
+  for (size_t i = 0; i < carved.size(); ++i) {
+    const F2CCell piece = carved.getGeometry(i);
+    if (F2CCells::buffer(piece, -0.5 * cov_width).area() > 0.0) {
+      wide.addGeometry(piece);
+    }
+  }
+  return wide;
 }
 }  // namespace
 
@@ -124,27 +144,50 @@ double CorridorHL::turnExtent(
 F2CCells CorridorHL::generateHeadlands(
     const F2CCells& field, const F2CRobot& robot,
     f2c::pp::TurningBase& turn) {
-  const F2CCells carved = generateHeadlands(
-      field, turnExtent(robot, turn) + 0.5 * robot.getWidth());
-  // Carving a corridor out of both sides of a thin cell can leave a strip
-  // narrower than the implement. Nothing can cover such a strip without the
-  // implement hanging over the corridor, and a swath generator handed one
-  // cuts it into fragments the route then joins with a turn each. Leave it
-  // to the corridor rather than call it mainland.
-  F2CCells wide;
-  for (size_t i = 0; i < carved.size(); ++i) {
-    const F2CCell piece = carved.getGeometry(i);
-    if (F2CCells::buffer(piece, -0.5 * robot.getCovWidth()).area() > 0.0) {
-      wide.addGeometry(piece);
-    }
+  const double width = turnExtent(robot, turn) + 0.5 * robot.getWidth();
+  const F2CCells carved = carveCorridors(field,
+      corridorShares(field, share_mode_),
+      [width](const CorridorShare&, size_t) { return width; }, spur_);
+  return dropNarrowerThanImplement(carved, robot.getCovWidth());
+}
+
+F2CCells CorridorHL::generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot,
+    f2c::pp::TurningBase& turn, const std::vector<double>& angs) {
+  if (angs.size() != field.size()) {
+    throw std::invalid_argument(
+        "CorridorHL::generateHeadlands: angs needs one entry per cell");
   }
-  return wide;
+  const double half_w = 0.5 * robot.getWidth();
+  const double raw_extent = turnExtent(robot, turn);
+  // Where a border meets a cell's swaths head-on, the turn there needs
+  // turnExtent()'s full reach; where the swaths run along it instead,
+  // nothing turns there and only the implement's width matters. Between the
+  // two, scale by how far the track is from parallel to the border, and take
+  // whichever of the two cells on it asks for more room.
+  const auto width_of = [&angs, half_w, raw_extent](
+      const CorridorShare& share, size_t j) {
+    const F2CLineString seg = share.shared_border.getGeometry(j);
+    double border_ang = 0.0;
+    if (seg.size() > 1) {
+      border_ang =
+          (seg.getGeometry(1) - seg.getGeometry(0)).getAngleFromPoint();
+    }
+    const double v = std::max(
+        std::abs(std::sin(angs[share.cell_i] - border_ang)),
+        std::abs(std::sin(angs[share.cell_k] - border_ang)));
+    return half_w + v * raw_extent;
+  };
+  const F2CCells carved = carveCorridors(
+      field, corridorShares(field, share_mode_), width_of, spur_);
+  return dropNarrowerThanImplement(carved, robot.getCovWidth());
 }
 
 F2CCells CorridorHL::generateHeadlands(
     const F2CCells& field, double dist_headland) {
-  return carveCorridors(
-      field, corridorShares(field, share_mode_), dist_headland, spur_);
+  return carveCorridors(field, corridorShares(field, share_mode_),
+      [dist_headland](const CorridorShare&, size_t) { return dist_headland; },
+      spur_);
 }
 
 F2CCells CorridorHL::generateHeadlandArea(

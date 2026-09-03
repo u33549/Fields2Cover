@@ -101,3 +101,51 @@ def test_fields2cover_hl_corridor_gen_dropsAPieceNarrowerThanTheImplement():
   carved = corridor.generateHeadlands(cells, robot, f2c.PP_DubinsCurves());
   assert (carved.size() == 5);
   near(carved.area(), 4 * 100 * 50 + 100 * 6, 1e-2);
+
+def test_fields2cover_hl_corridor_gen_angsNarrowTheCorridorWhenSwathsRunAlongTheBorder():
+  cells = f2c.Cells(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(
+    [f2c.Point(0,0), f2c.Point(100,0), f2c.Point(100,50), f2c.Point(0,50), f2c.Point(0,0)]))));
+  cells.addGeometry(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(
+    [f2c.Point(0,50), f2c.Point(100,50), f2c.Point(100,100), f2c.Point(0,100), f2c.Point(0,50)]))));
+  robot = f2c.Robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+  corridor = f2c.HG_Corridor_gen();
+  dubins = f2c.PP_DubinsCurves();
+
+  # Both cells' swaths run along the shared (horizontal) border: no turn
+  # happens there, so the corridor only has to fit the implement.
+  angs = f2c.VectorDouble([0.0, 0.0]);
+  carved = corridor.generateHeadlands(cells, robot, dubins, angs);
+  expected_width = 0.5 * robot.getWidth();
+  near(cells.area() - carved.area(), 100 * expected_width, 1e-2);
+  assert (expected_width < corridor.turnExtent(robot, dubins));
+
+def test_fields2cover_hl_corridor_gen_angsMatchTheUniformCorridorWhenSwathsMeetTheBorderHeadOn():
+  cells = f2c.Cells(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(
+    [f2c.Point(0,0), f2c.Point(100,0), f2c.Point(100,50), f2c.Point(0,50), f2c.Point(0,0)]))));
+  cells.addGeometry(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(
+    [f2c.Point(0,50), f2c.Point(100,50), f2c.Point(100,100), f2c.Point(0,100), f2c.Point(0,50)]))));
+  robot = f2c.Robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+  corridor = f2c.HG_Corridor_gen();
+  dubins = f2c.PP_DubinsCurves();
+
+  # Both cells' swaths meet the border head-on: turnExtent()'s worst case
+  # already covers it, so the angle-aware corridor matches the uniform one.
+  angs = f2c.VectorDouble([1.5707963267948966, 1.5707963267948966]);
+  angled = corridor.generateHeadlands(cells, robot, dubins, angs);
+  uniform = corridor.generateHeadlands(cells, robot, dubins);
+  near(angled.area(), uniform.area(), 1e-2);
+
+def test_fields2cover_hl_corridor_gen_angsWrongSizeThrows():
+  cells = f2c.Cells(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(
+    [f2c.Point(0,0), f2c.Point(100,0), f2c.Point(100,50), f2c.Point(0,50), f2c.Point(0,0)]))));
+  cells.addGeometry(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(
+    [f2c.Point(0,50), f2c.Point(100,50), f2c.Point(100,100), f2c.Point(0,100), f2c.Point(0,50)]))));
+  robot = f2c.Robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+  corridor = f2c.HG_Corridor_gen();
+
+  with pytest.raises(Exception) as e_info:
+    corridor.generateHeadlands(cells, robot, f2c.PP_DubinsCurves(),
+        f2c.VectorDouble([0.0]));

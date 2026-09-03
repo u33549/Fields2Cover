@@ -113,6 +113,25 @@ class CorridorHL : public HeadlandGeneratorBase {
   /// @return Distance the turn reaches past the end of the swaths
   double turnExtent(const F2CRobot& robot, f2c::pp::TurningBase& turn) const;
 
+  /// Open a corridor whose depth follows how each cell's swaths meet the
+  /// border, instead of one depth for the whole field.
+  ///
+  /// turnExtent() answers the worst case: swaths ending square on the
+  /// border. Where a cell's swaths run along the border instead, nothing
+  /// turns there at all, and the corridor only has to fit the implement.
+  /// Between the two, this scales turnExtent() by how far the swath track
+  /// is from parallel to the border, and takes whichever of the two cells
+  /// on a border asks for more.
+  /// @param field Cells that share borders, usually from a decomposition.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @param angs Best swath track angle for each cell in \a field, in the
+  ///        same order as \a field -- one entry per cell.
+  /// @return Mainland area
+  F2CCells generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    const std::vector<double>& angs);
+
   /// Open a corridor wide enough for \a n_swaths passes.
   /// @param field Borders of the field and the obstacles on it.
   /// @param swath_width Width of each headland swath.

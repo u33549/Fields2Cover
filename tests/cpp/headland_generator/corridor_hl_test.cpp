@@ -6,6 +6,8 @@
 
 #include <gtest/gtest.h>
 #include <cmath>
+#include <stdexcept>
+#include <vector>
 #include "fields2cover/types.h"
 #include "fields2cover/decomposition/trapezoidal_decomp.h"
 #include "fields2cover/headland_generator/constant_headland.h"
@@ -453,4 +455,52 @@ TEST(fields2cover_hl_corridor_gen, dropsAPieceNarrowerThanTheImplement) {
         carved.getGeometry(i), -0.5 * robot.getCovWidth()).area(), 0.0);
   }
   EXPECT_NEAR(thinnest, 6.0, 1e-2);
+}
+
+TEST(fields2cover_hl_corridor_gen,
+    angsNarrowTheCorridorWhenSwathsRunAlongTheBorder) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CCells cells = twoCellsSharingAHorizontalBorder();
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  // Both cells' swaths run along the border (track angle 0, same as the
+  // border itself): no turn happens there, so the corridor only has to fit
+  // the implement -- half the robot's width, not turnExtent()'s full depth.
+  const std::vector<double> angs {0.0, 0.0};
+  F2CCells carved = corridor.generateHeadlands(cells, robot, dubins, angs);
+  const double expected_width = 0.5 * robot.getWidth();
+  EXPECT_NEAR(cells.area() - carved.area(), 100 * expected_width, 1e-2);
+  EXPECT_LT(expected_width, corridor.turnExtent(robot, dubins));
+}
+
+TEST(fields2cover_hl_corridor_gen,
+    angsMatchTheUniformCorridorWhenSwathsMeetTheBorderHeadOn) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CCells cells = twoCellsSharingAHorizontalBorder();
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  // Both cells' swaths meet the border head-on (track angle pi/2, square to
+  // the border): the worst case turnExtent() already covers, so the
+  // angle-aware corridor should come out exactly as deep as the uniform one.
+  const std::vector<double> angs {M_PI_2, M_PI_2};
+  F2CCells angled = corridor.generateHeadlands(cells, robot, dubins, angs);
+  F2CCells uniform = corridor.generateHeadlands(cells, robot, dubins);
+  EXPECT_NEAR(angled.area(), uniform.area(), 1e-2);
+}
+
+TEST(fields2cover_hl_corridor_gen, angsWrongSizeThrows) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CCells cells = twoCellsSharingAHorizontalBorder();
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  const std::vector<double> too_short {0.0};
+  EXPECT_THROW(
+      corridor.generateHeadlands(cells, robot, dubins, too_short),
+      std::invalid_argument);
 }
