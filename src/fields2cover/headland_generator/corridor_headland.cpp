@@ -120,12 +120,19 @@ F2CCells dropNarrowerThanImplement(const F2CCells& carved, double cov_width) {
 
 double CorridorHL::turnExtent(
     const F2CRobot& robot, f2c::pp::TurningBase& turn) const {
-  // Lay the ends of two neighbouring swaths on the x axis and turn from one
-  // into the other. How far the turn reaches is the highest point it drives
-  // to, which is the room a border the swaths end on has to leave.
+  return turnExtent(robot, turn, M_PI_2);
+}
+
+double CorridorHL::turnExtent(const F2CRobot& robot,
+    f2c::pp::TurningBase& turn, double track_border_angle) const {
+  // Lay the border on the x axis with two swath ends on it, as far apart as
+  // swaths at this angle cross it, and turn from one into the other.
+  const double sin_ang = std::max(
+      std::abs(std::sin(track_border_angle)), min_track_sin_);
+  const double ang = std::asin(std::min(1.0, sin_ang));
   const F2CPath path = turn.createTurn(robot,
-      F2CPoint(0.0, 0.0), M_PI_2,
-      F2CPoint(robot.getCovWidth(), 0.0), -M_PI_2);
+      F2CPoint(0.0, 0.0), ang,
+      F2CPoint(robot.getCovWidth() / sin_ang, 0.0), ang + M_PI);
   // A planner that cannot join the two swaths says nothing about the width,
   // so fall back on the bound taken without one. A planner that joins them
   // without reaching past their ends is a different matter: a turn that backs
@@ -159,13 +166,23 @@ F2CCells CorridorHL::generateHeadlands(
         "CorridorHL::generateHeadlands: angs needs one entry per cell");
   }
   const double half_w = 0.5 * robot.getWidth();
-  const double raw_extent = turnExtent(robot, turn);
-  // Where a border meets a cell's swaths head-on, the turn there needs
-  // turnExtent()'s full reach; where the swaths run along it instead,
-  // nothing turns there and only the implement's width matters. Between the
-  // two, scale by how far the track is from parallel to the border, and take
-  // whichever of the two cells on it asks for more room.
-  const auto width_of = [&angs, half_w, raw_extent](
+  // turnExtent() plans a turn, and every border asks twice.
+  std::vector<double> reach(91);
+  for (int deg = 0; deg <= 90; ++deg) {
+    reach[deg] = turnExtent(robot, turn, deg * M_PI / 180.0);
+  }
+  const auto reach_at = [&reach](double ang) {
+    const double deg = std::asin(std::min(1.0, std::abs(std::sin(ang))))
+        * 180.0 / M_PI;
+    const size_t lo = static_cast<size_t>(std::floor(deg));
+    const size_t hi = std::min<size_t>(90, lo + 1);
+    const double f = deg - lo;
+    return reach[lo] * (1.0 - f) + reach[hi] * f;
+  };
+  // Ask each cell separately: do your swaths end here, and if so how far does
+  // a turn here reach. Asking both at once lets a cell that never turns on
+  // this border set its depth.
+  const auto width_of = [&angs, &reach_at, half_w, &robot](
       const CorridorShare& share, size_t j) {
     const F2CLineString seg = share.shared_border.getGeometry(j);
     double border_ang = 0.0;
@@ -173,10 +190,17 @@ F2CCells CorridorHL::generateHeadlands(
       border_ang =
           (seg.getGeometry(1) - seg.getGeometry(0)).getAngleFromPoint();
     }
-    const double v = std::max(
-        std::abs(std::sin(angs[share.cell_i] - border_ang)),
-        std::abs(std::sin(angs[share.cell_k] - border_ang)));
-    return half_w + v * raw_extent;
+    const double len = seg.length();
+    const auto demand = [&](size_t cell) {
+      const double ang = angs[cell] - border_ang;
+      // Swaths cross covWidth / sin(ang) apart: a shorter border gets none.
+      if (len * std::abs(std::sin(ang)) < robot.getCovWidth()) {
+        return 0.0;
+      }
+      return reach_at(ang);
+    };
+    return half_w +
+        std::max(demand(share.cell_i), demand(share.cell_k));
   };
   const F2CCells carved = carveCorridors(
       field, corridorShares(field, share_mode_), width_of, spur_);

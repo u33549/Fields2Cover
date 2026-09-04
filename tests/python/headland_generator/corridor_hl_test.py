@@ -4,6 +4,7 @@
 #                         BSD-3 License
 #==============================================================================
 
+import math
 import pytest
 import fields2cover as f2c
 
@@ -149,3 +150,16 @@ def test_fields2cover_hl_corridor_gen_angsWrongSizeThrows():
   with pytest.raises(Exception) as e_info:
     corridor.generateHeadlands(cells, robot, f2c.PP_DubinsCurves(),
         f2c.VectorDouble([0.0]));
+
+def test_fields2cover_hl_corridor_gen_turnExtentTakesATrackAngle():
+  corridor = f2c.HG_Corridor_gen();
+  dubins = f2c.PP_DubinsCurves();
+  robot = f2c.Robot(2.0, 3.0);
+  robot.setMinTurningRadius(2.0);
+
+  near(corridor.turnExtent(robot, dubins, math.pi / 2),
+       corridor.turnExtent(robot, dubins), 1e-6);
+  # Swaths well off square cross the border further apart, but the turn still
+  # has to swing round: the reach never falls to the radius.
+  assert (corridor.turnExtent(robot, dubins, math.radians(5)) >=
+          robot.getMinTurningRadius() - 1e-6);

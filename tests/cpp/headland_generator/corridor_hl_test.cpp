@@ -504,3 +504,32 @@ TEST(fields2cover_hl_corridor_gen, angsWrongSizeThrows) {
       corridor.generateHeadlands(cells, robot, dubins, too_short),
       std::invalid_argument);
 }
+
+TEST(fields2cover_hl_corridor_gen, turnExtentAtRightAngleIsTheSquareCase) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CRobot robot(2.0, 3.0);
+  robot.setMinTurningRadius(2.0);
+
+  EXPECT_NEAR(corridor.turnExtent(robot, dubins, M_PI_2),
+      corridor.turnExtent(robot, dubins), 1e-6);
+}
+
+TEST(fields2cover_hl_corridor_gen, turnExtentStaysAboveTheTurningRadius) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  F2CRobot robot(2.0, 3.0);
+  robot.setMinTurningRadius(2.0);
+
+  // Swaths further and further from square to the border cross it further
+  // apart, but the turn between them still has to swing round: it never
+  // reaches less than the radius, so it never scales to nothing the way
+  // sin(angle) does.
+  for (int deg = 5; deg <= 90; deg += 5) {
+    const double reach = corridor.turnExtent(robot, dubins, deg * M_PI / 180.0);
+    EXPECT_GE(reach, robot.getMinTurningRadius() - 1e-6) << "at " << deg;
+  }
+  const double shallow = corridor.turnExtent(robot, dubins, 5.0 * M_PI / 180.0);
+  EXPECT_GT(shallow,
+      std::sin(5.0 * M_PI / 180.0) * corridor.turnExtent(robot, dubins));
+}

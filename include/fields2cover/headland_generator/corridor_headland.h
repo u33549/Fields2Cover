@@ -113,20 +113,36 @@ class CorridorHL : public HeadlandGeneratorBase {
   /// @return Distance the turn reaches past the end of the swaths
   double turnExtent(const F2CRobot& robot, f2c::pp::TurningBase& turn) const;
 
+  /// How far a turn reaches past swaths that meet the border at an angle.
+  ///
+  /// Swaths not square to a border cross it covWidth / sin(angle) apart, so
+  /// the turn between them is a different one. pi/2 is the square case, which
+  /// is what turnExtent(robot, turn) asks.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @param track_border_angle Angle between the swath track and the border.
+  /// @return Distance the turn reaches past the end of the swaths
+  double turnExtent(const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    double track_border_angle) const;
+
   /// Open a corridor whose depth follows how each cell's swaths meet the
   /// border, instead of one depth for the whole field.
   ///
   /// turnExtent() answers the worst case: swaths ending square on the
-  /// border. Where a cell's swaths run along the border instead, nothing
-  /// turns there at all, and the corridor only has to fit the implement.
-  /// Between the two, this scales turnExtent() by how far the swath track
-  /// is from parallel to the border, and takes whichever of the two cells
-  /// on a border asks for more.
+  /// border. Each of the two cells is asked instead whether its swaths end
+  /// on this border at all, and if they do how far a turn there reaches; the
+  /// deeper answer is the depth.
+  ///
+  /// Whether they end there is a count, covWidth / sin(angle) apart along the
+  /// border, and a count below one is not the same as none: over 31 fields it
+  /// read "none" on 207 borders swaths did end on. This is the narrowest
+  /// corridor worth trying, not one certainly wide enough.
   /// @param field Cells that share borders, usually from a decomposition.
   /// @param robot Robot doing the coverage.
   /// @param turn Planner that will drive the turns on this field.
-  /// @param angs Best swath track angle for each cell in \a field, in the
-  ///        same order as \a field -- one entry per cell.
+  /// @param angs Swath track angle per cell, in \a field's order. Take them
+  ///        off a mainland already carved at turnExtent()'s depth, not off
+  ///        the bare cells -- that is where the swaths are generated.
   /// @return Mainland area
   F2CCells generateHeadlands(
     const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
@@ -152,6 +168,10 @@ class CorridorHL : public HeadlandGeneratorBase {
 
  private:
   CorridorShareMode share_mode_ {CorridorShareMode::ASYMMETRIC};
+
+  /// Floor on sin(angle) so a track along the border does not put the two
+  /// swath ends turnExtent() plans between infinitely far apart.
+  double min_track_sin_ {1e-2};
 
   /// Tolerance the neighbour is buffered by to find the shared border.
   double tol_ {1e-3};

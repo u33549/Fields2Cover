@@ -7,7 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `f2c::hg::CorridorHL::generateHeadlands` overload taking each cell's swath track angle alongside the turn planner: the corridor's depth follows how a border meets the swaths instead of one depth for the whole field. `turnExtent()` answers the worst case, swaths ending square on a border; where a cell's swaths run along it instead, nothing turns there and the corridor only has to fit the implement. Measured on 31 real fields: recovers 5.7-13.2% more mainland than the uniform depth, at little to no cost in route efficiency.
+- `f2c::hg::CorridorHL::generateHeadlands` overload taking each cell's swath track angle alongside the turn planner, so the corridor's depth follows how a border meets the swaths instead of one depth for the whole field. Each of the two cells on a border is asked whether its swaths end there and, if they do, how far a turn there reaches; the deeper answer is the depth. Over 31 real fields it recovers 5.1% (small robot) to 11.2% (large) more mainland than the uniform depth and never less on any field, but it also drives further into the mainland on 16 of 31 fields and leaves more mainland pieces, so it is not a drop-in replacement for the uniform depth.
+- `f2c::hg::CorridorHL::turnExtent` overload taking the angle the swaths meet the border at. Swaths not square to a border cross it `covWidth / sin(angle)` apart, so the turn between them is a different one; the reach that comes back barely moves with the angle and never falls below the turning radius, unlike scaling `turnExtent()` by `sin(angle)`.
 
 ## [2.1.0] - 2026-09-03
 
