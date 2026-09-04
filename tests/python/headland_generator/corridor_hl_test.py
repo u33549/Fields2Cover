@@ -114,12 +114,12 @@ def test_fields2cover_hl_corridor_gen_angsNarrowTheCorridorWhenSwathsRunAlongThe
   dubins = f2c.PP_DubinsCurves();
 
   # Both cells' swaths run along the shared (horizontal) border: no turn
-  # happens there, so the corridor only has to fit the implement.
+  # happens there and nothing drives there, so no corridor is opened and the
+  # two cells come back as one piece.
   angs = f2c.VectorDouble([0.0, 0.0]);
   carved = corridor.generateHeadlands(cells, robot, dubins, angs);
-  expected_width = 0.5 * robot.getWidth();
-  near(cells.area() - carved.area(), 100 * expected_width, 1e-2);
-  assert (expected_width < corridor.turnExtent(robot, dubins));
+  near(carved.area(), cells.area(), 1e-2);
+  assert (carved.size() == 1);
 
 def test_fields2cover_hl_corridor_gen_angsMatchTheUniformCorridorWhenSwathsMeetTheBorderHeadOn():
   cells = f2c.Cells(f2c.Cell(f2c.LinearRing(f2c.VectorPoint(

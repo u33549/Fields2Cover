@@ -173,6 +173,10 @@ class CorridorHL : public HeadlandGeneratorBase {
   /// swath ends turnExtent() plans between infinitely far apart.
   double min_track_sin_ {1e-2};
 
+  /// Part of turnExtent() a cell has to be wider than for its swath angle to
+  /// say anything about which of its borders turns reach.
+  double thin_cell_share_ {0.25};
+
   /// Tolerance the neighbour is buffered by to find the shared border.
   double tol_ {1e-3};
   /// Width the zero-width spur a difference can leave behind is opened by.

@@ -106,11 +106,11 @@ F2CCells carveCorridors(const F2CCells& field,
 // Nothing can cover a piece narrower than the implement without it hanging
 // over the corridor, and a swath generator handed one cuts it into fragments
 // the route then joins with a turn each. Leave it to the corridor instead.
-F2CCells dropNarrowerThanImplement(const F2CCells& carved, double cov_width) {
+F2CCells dropNarrowerThan(const F2CCells& carved, double half_width) {
   F2CCells wide;
   for (size_t i = 0; i < carved.size(); ++i) {
     const F2CCell piece = carved.getGeometry(i);
-    if (F2CCells::buffer(piece, -0.5 * cov_width).area() > 0.0) {
+    if (F2CCells::buffer(piece, -half_width).area() > 0.0) {
       wide.addGeometry(piece);
     }
   }
@@ -155,7 +155,7 @@ F2CCells CorridorHL::generateHeadlands(
   const F2CCells carved = carveCorridors(field,
       corridorShares(field, share_mode_),
       [width](const CorridorShare&, size_t) { return width; }, spur_);
-  return dropNarrowerThanImplement(carved, robot.getCovWidth());
+  return dropNarrowerThan(carved, 0.5 * robot.getCovWidth());
 }
 
 F2CCells CorridorHL::generateHeadlands(
@@ -166,10 +166,18 @@ F2CCells CorridorHL::generateHeadlands(
         "CorridorHL::generateHeadlands: angs needs one entry per cell");
   }
   const double half_w = 0.5 * robot.getWidth();
+  const double square_reach = turnExtent(robot, turn);
   // turnExtent() plans a turn, and every border asks twice.
   std::vector<double> reach(91);
   for (int deg = 0; deg <= 90; ++deg) {
     reach[deg] = turnExtent(robot, turn, deg * M_PI / 180.0);
+  }
+  // A cell too narrow to hold a turn spills onto its own borders whatever
+  // angle its swaths run at, so the count below cannot be trusted there.
+  std::vector<bool> thin(field.size());
+  for (size_t i = 0; i < field.size(); ++i) {
+    thin[i] = F2CCells::buffer(field.getGeometry(i),
+        -thin_cell_share_ * square_reach).area() <= 0.0;
   }
   const auto reach_at = [&reach](double ang) {
     const double deg = std::asin(std::min(1.0, std::abs(std::sin(ang))))
@@ -182,7 +190,7 @@ F2CCells CorridorHL::generateHeadlands(
   // Ask each cell separately: do your swaths end here, and if so how far does
   // a turn here reach. Asking both at once lets a cell that never turns on
   // this border set its depth.
-  const auto width_of = [&angs, &reach_at, half_w, &robot](
+  const auto width_of = [&angs, &reach_at, &thin, half_w, &robot](
       const CorridorShare& share, size_t j) {
     const F2CLineString seg = share.shared_border.getGeometry(j);
     double border_ang = 0.0;
@@ -191,20 +199,30 @@ F2CCells CorridorHL::generateHeadlands(
           (seg.getGeometry(1) - seg.getGeometry(0)).getAngleFromPoint();
     }
     const double len = seg.length();
+    const bool trust = !thin[share.cell_i] && !thin[share.cell_k];
     const auto demand = [&](size_t cell) {
       const double ang = angs[cell] - border_ang;
       // Swaths cross covWidth / sin(ang) apart: a shorter border gets none.
-      if (len * std::abs(std::sin(ang)) < robot.getCovWidth()) {
+      if (trust && len * std::abs(std::sin(ang)) < robot.getCovWidth()) {
         return 0.0;
       }
       return reach_at(ang);
     };
-    return half_w +
+    const double reach =
         std::max(demand(share.cell_i), demand(share.cell_k));
+    // Neither cell turns here, so nobody drives here either: cutting the
+    // implement's half width would only leave a strip nothing works.
+    return reach > 0.0 ? half_w + reach : 0.0;
   };
+  // Where the corridor is nothing the two pieces meet along a line, which is
+  // not a polygon a caller can use. Joining them also undoes a split the
+  // decomposition made where both sides wanted the same swath direction.
   const F2CCells carved = carveCorridors(
-      field, corridorShares(field, share_mode_), width_of, spur_);
-  return dropNarrowerThanImplement(carved, robot.getCovWidth());
+      field, corridorShares(field, share_mode_), width_of, spur_)
+      .unionCascaded();
+  // A piece has to hold two passes to be worth keeping: one that only holds
+  // the implement has nowhere to turn between them.
+  return dropNarrowerThan(carved, robot.getCovWidth());
 }
 
 F2CCells CorridorHL::generateHeadlands(

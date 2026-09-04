@@ -466,13 +466,12 @@ TEST(fields2cover_hl_corridor_gen,
   robot.setMinTurningRadius(2.0);
 
   // Both cells' swaths run along the border (track angle 0, same as the
-  // border itself): no turn happens there, so the corridor only has to fit
-  // the implement -- half the robot's width, not turnExtent()'s full depth.
+  // border itself): no turn happens there and nothing drives there either,
+  // so no corridor is opened and the two cells come back as one piece.
   const std::vector<double> angs {0.0, 0.0};
   F2CCells carved = corridor.generateHeadlands(cells, robot, dubins, angs);
-  const double expected_width = 0.5 * robot.getWidth();
-  EXPECT_NEAR(cells.area() - carved.area(), 100 * expected_width, 1e-2);
-  EXPECT_LT(expected_width, corridor.turnExtent(robot, dubins));
+  EXPECT_NEAR(carved.area(), cells.area(), 1e-2);
+  EXPECT_EQ(carved.size(), 1);
 }
 
 TEST(fields2cover_hl_corridor_gen,
