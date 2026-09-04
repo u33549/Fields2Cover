@@ -293,3 +293,39 @@ Code that lets the user choose the mode therefore does not have to branch on it:
 
 ``RoutePlannerBase`` keeps its longer ``genRoute`` overload, which is still the way
 to reach the optimizer settings such as the time limit or ``redirect_swaths``.
+
+
+Fields split into cells
+-----------------------
+
+When the field has been decomposed, ``genRoute`` receives one group of swaths per
+cell. The order those groups arrive in is whatever the decomposition produced and
+says nothing about where the cells lie, so the route does not follow it: it picks
+the next cell by what that cell costs to reach, and drives a cell in reverse when
+its far end is the nearer one.
+
+The cost is the distance through the headland graph -- a cell on the other side of
+a wall is far to drive to even when it looks near -- plus the turn needed to leave
+one cell and line up on the next. A field with a single cell has no order to choose
+and is unaffected.
+
+The machine rarely stands at the first cell. ``setStartAndEndPoint`` says where it
+is, and the route then starts at the cell nearest that point and returns to it:
+
+.. tabs:: lang
+
+  .. code-tab:: cpp
+    :caption: C++
+
+    f2c::rp::BoustrophedonOrder order;
+    order.setStartAndEndPoint(F2CPoint(98, 25));
+    F2CRoute route = order.genRoute(mid_hl, swaths_by_cells);
+
+  .. code-tab:: python
+    :caption: Python
+
+    order = f2c.RP_Boustrophedon();
+    order.setStartAndEndPoint(f2c.Point(98, 25));
+    route = order.genRoute(mid_hl, swaths_by_cells);
+
+The same point is used for both ends, as in ``RoutePlannerBase::setStartAndEndPoint``.
