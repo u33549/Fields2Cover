@@ -14,20 +14,30 @@ namespace f2c::pp {
 namespace {
 
 // Perpendicular distance from a point to the swath that runs from pos in
-// direction ang. The strip only reaches forward; a point behind pos is
-// measured to pos itself.
-double distanceToSwath(const F2CPoint& p, const F2CPoint& pos, double ang) {
+// direction ang, for the first strip_length of it only.
+//
+// The strip is not endless. What excuses a turn for clipping it is that the
+// vehicle is settling onto that swath either side of the turn, and settling
+// takes about a turning radius; a path that runs down the swath line far
+// beyond that is driving over standing crop, however well aligned it is.
+// Measured before this bound: Reeds-Shepp put a whole u-turn under the
+// boundary and half of it was excused.
+double distanceToSwath(const F2CPoint& p, const F2CPoint& pos, double ang,
+    double strip_length) {
   const double dx = p.getX() - pos.getX();
   const double dy = p.getY() - pos.getY();
   const double ahead = dx * std::cos(ang) + dy * std::sin(ang);
+  if (ahead > strip_length) {
+    return std::numeric_limits<double>::infinity();
+  }
   if (ahead < 0.0) {
-    return std::hypot(dx, dy);
+    return std::hypot(dx, dy);  // behind the swath end: measure to the end
   }
   return std::fabs(-dx * std::sin(ang) + dy * std::cos(ang));
 }
 
 void measureOutside(const F2CPath& path, const F2CCells& free_space,
-    double step, double half_swath,
+    double step, double half_swath, double strip_length,
     const F2CPoint& in_pos, double in_ang,
     const F2CPoint& out_pos, double out_ang,
     double* length_out, double* deepest_out, double* in_swath_out) {
@@ -51,8 +61,9 @@ void measureOutside(const F2CPath& path, const F2CCells& free_space,
         continue;
       }
       if (half_swath > 0.0 &&
-          std::min(distanceToSwath(p, in_pos, in_ang),
-                   distanceToSwath(p, out_pos, out_ang)) <= half_swath) {
+          std::min(distanceToSwath(p, in_pos, in_ang, strip_length),
+                   distanceToSwath(p, out_pos, out_ang, strip_length))
+              <= half_swath) {
         *in_swath_out += len / n;
         continue;
       }
@@ -224,10 +235,11 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
   }
 
   const double half_swath = 0.5 * this->swath_width_;
+  const double strip_length = robot.getMinTurningRadius();
   const double in_ang = start_angle + M_PI;
   auto measure = [&](const F2CPath& p, TurnReport* r) {
     measureOutside(p, this->free_space_, this->discretization * 10.0,
-        half_swath, start_pos, in_ang, end_pos, end_angle,
+        half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
         &r->length_outside, &r->deepest_outside, &r->length_in_swath);
     r->inside = r->length_outside <= 0.05;
   };

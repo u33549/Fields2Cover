@@ -211,3 +211,28 @@ TEST(fields2cover_pp_turn_constraint, settings_round_trip) {
   turn.setFreeSpace(F2CCells{rectangle(0.0, 0.0, 1.0, 1.0)});
   EXPECT_FALSE(turn.getFreeSpace().isEmpty());
 }
+
+TEST(fields2cover_pp_turn_constraint, a_long_run_down_a_swath_is_still_crop) {
+  F2CRobot robot = makeRobot();
+  const double R = robot.getMinTurningRadius();
+  // Both poses on one swath line, thirty metres apart, facing the same way:
+  // Reeds-Shepp answers by reversing the whole way down the line. Perfectly
+  // aligned with the swath, and still thirty metres driven over it.
+  const F2CCells elsewhere {rectangle(-60.0, 5.0, 60.0, 40.0)};
+  const F2CPoint start(0.0, 0.0), end(0.0, -30.0);
+
+  f2c::pp::ReedsSheppCurves planner;
+  planner.setFreeSpace(elsewhere);
+  planner.setSwathWidth(6.0);
+  f2c::pp::TurnReport report;
+  const F2CPath path = planner.createTurn(
+      robot, start, M_PI_2, end, M_PI_2, &report);
+  ASSERT_NEAR(path.length(), 30.0, 1e-6);
+
+  // Settling onto a swath costs about a turning radius at each end; past
+  // that the alignment excuses nothing. Excusing the whole line would report
+  // this turn as clean.
+  EXPECT_FALSE(report.inside);
+  EXPECT_NEAR(report.length_in_swath, 2.0 * R, 0.1);
+  EXPECT_NEAR(report.length_outside, 30.0 - 2.0 * R, 0.1);
+}
