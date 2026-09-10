@@ -8,6 +8,8 @@
 #include <cmath>
 #include "fields2cover/path_planning/constrained_turn.h"
 #include "fields2cover/path_planning/dubins_curves.h"
+#include "fields2cover/path_planning/reeds_shepp_curves.h"
+#include <vector>
 #include "fields2cover/types.h"
 
 namespace {
@@ -152,6 +154,51 @@ TEST(fields2cover_pp_constrained_turn, no_waypoint_can_widen_a_narrow_band) {
   EXPECT_FALSE(res.used_waypoint);
   EXPECT_GT(res.length_outside, 0.05);
   EXPECT_NEAR(res.deepest_outside, 13.937 - 12.0, 0.05);
+}
+
+TEST(fields2cover_pp_constrained_turn, inside_beats_shorter_across_planners) {
+  F2CRobot robot = makeRobot();
+  f2c::pp::DubinsCurves dubins;
+  f2c::pp::ReedsSheppCurves reeds_shepp;
+  f2c::pp::ConstrainedTurn constrained;
+  // A u-turn between two ends of one face of an 18 m band. Reeds-Shepp reaches
+  // it by reversing the whole way, which leaves the band; the forward turn is
+  // the same length and stays in. Length cannot tell them apart, containment
+  // can.
+  const F2CCells band {rectangle(-60.0, 0.0, 60.0, 18.0)};
+  const F2CPoint start(0.0, 0.0), end(12.0, 0.0);
+  const double start_angle = M_PI_2, end_angle = -M_PI_2;
+
+  const F2CPath rs_alone = reeds_shepp.createTurn(
+      robot, start, start_angle, end, end_angle);
+  ASSERT_GT(lengthOutside(rs_alone, band), 1.0)
+      << "Reeds-Shepp alone is expected to leave the band here";
+
+  const auto res = constrained.createTurn(robot, band, start, start_angle,
+      end, end_angle,
+      std::vector<f2c::pp::TurningBase*>{&reeds_shepp, &dubins});
+
+  EXPECT_TRUE(res.inside);
+  EXPECT_FALSE(res.used_waypoint);
+  EXPECT_EQ(res.planner, 1) << "the forward turn should have been kept";
+  EXPECT_LT(lengthOutside(res.path, band), 0.05);
+  // Choosing the contained answer costs nothing in length here.
+  EXPECT_NEAR(res.path.length(), rs_alone.length(), 0.5);
+}
+
+TEST(fields2cover_pp_constrained_turn, a_planner_that_already_fits_is_kept) {
+  F2CRobot robot = makeRobot();
+  f2c::pp::DubinsCurves dubins;
+  f2c::pp::ReedsSheppCurves reeds_shepp;
+  f2c::pp::ConstrainedTurn constrained;
+  // Both stay inside; then the shorter one wins, whichever planner it came
+  // from. Reeds-Shepp is never longer than Dubins, so it is listed first.
+  const F2CCells band {rectangle(-60.0, 0.0, 60.0, 18.0)};
+  const auto res = constrained.createTurn(robot, band,
+      F2CPoint(0.0, 0.0), M_PI_2, F2CPoint(24.0, 0.0), -M_PI_2, dubins);
+  EXPECT_TRUE(res.inside);
+  EXPECT_FALSE(res.used_waypoint);
+  EXPECT_EQ(res.planner, 0);
 }
 
 TEST(fields2cover_pp_constrained_turn, settings_round_trip) {
