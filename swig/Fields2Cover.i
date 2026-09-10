@@ -172,6 +172,11 @@ typedef long unsigned int size_t;
 %template(VectorCells) std::vector<f2c::types::Cells>;
 %template(Strips) std::vector<f2c::types::Strip>;
 %template(PathStates) std::vector<f2c::types::PathState>;
+%template(VectorPath) std::vector<F2CPath>;
+// concaveCorners answers with a corner and the angle that points into the
+// region; without these the pair comes back as an opaque handle.
+%template(PointAngle) std::pair<F2CPoint, double>;
+%template(VectorPointAngle) std::vector<std::pair<F2CPoint, double>>;
 %template(Fields) std::vector<f2c::types::Field>;
 %template(VectorPathDirection) std::vector<f2c::types::PathDirection>;
 %template(VectorPathSectionType) std::vector<f2c::types::PathSectionType>;
