@@ -6,7 +6,7 @@
 
 #include <gtest/gtest.h>
 #include <cmath>
-#include "fields2cover/path_planning/constrained_turn.h"
+#include "fields2cover/path_planning/turning_base.h"
 #include "fields2cover/path_planning/dubins_curves.h"
 #include "fields2cover/path_planning/reeds_shepp_curves.h"
 #include <vector>
@@ -74,15 +74,15 @@ double minRadius(const F2CPath& path) {
 
 }  // namespace
 
-TEST(fields2cover_pp_constrained_turn, corners_of_a_convex_region) {
+TEST(fields2cover_pp_turn_constraint, corners_of_a_convex_region) {
   // A rectangle turns outward at every vertex, so it has nothing to wrap.
   const F2CCells box {rectangle(-50.0, 0.0, 50.0, 18.0)};
-  EXPECT_TRUE(f2c::pp::ConstrainedTurn::concaveCorners(box).empty());
+  EXPECT_TRUE(f2c::pp::TurningBase::concaveCorners(box).empty());
 }
 
-TEST(fields2cover_pp_constrained_turn, corners_of_a_wrapped_corner) {
+TEST(fields2cover_pp_turn_constraint, corners_of_a_wrapped_corner) {
   // The band around a right-angled crop corner turns inward exactly once.
-  const auto corners = f2c::pp::ConstrainedTurn::concaveCorners(
+  const auto corners = f2c::pp::TurningBase::concaveCorners(
       cornerBand(12.0, 80.0));
   ASSERT_EQ(corners.size(), 1);
   EXPECT_NEAR(corners[0].first.getX(), 0.0, 1e-6);
@@ -92,28 +92,27 @@ TEST(fields2cover_pp_constrained_turn, corners_of_a_wrapped_corner) {
       0.0, 1e-6);
 }
 
-TEST(fields2cover_pp_constrained_turn, a_turn_that_fits_is_left_alone) {
+TEST(fields2cover_pp_turn_constraint, a_turn_that_fits_is_left_alone) {
   F2CRobot robot = makeRobot();
   f2c::pp::DubinsCurves dubins;
-  f2c::pp::ConstrainedTurn constrained;
   // Two swath ends 18 m apart on one face of an 18 m band: a plain u-turn.
   const F2CCells band {rectangle(-60.0, 0.0, 60.0, 18.0)};
   const F2CPoint start(0.0, 0.0), end(18.0, 0.0);
 
-  const F2CPath plain = dubins.createTurn(
-      robot, start, M_PI_2, end, -M_PI_2);
-  const auto res = constrained.createTurn(
-      robot, band, start, M_PI_2, end, -M_PI_2, dubins);
+  const F2CPath plain = dubins.createTurn(robot, start, M_PI_2, end, -M_PI_2);
+  dubins.setFreeSpace(band);
+  f2c::pp::TurnReport report;
+  const F2CPath path = dubins.createTurn(
+      robot, start, M_PI_2, end, -M_PI_2, &report);
 
-  EXPECT_TRUE(res.inside);
-  EXPECT_FALSE(res.used_waypoint);
-  EXPECT_NEAR(res.path.length(), plain.length(), 1e-9);
+  EXPECT_TRUE(report.inside);
+  EXPECT_FALSE(report.used_waypoint);
+  EXPECT_NEAR(path.length(), plain.length(), 1e-9);
 }
 
-TEST(fields2cover_pp_constrained_turn, a_turn_that_cuts_a_corner_is_repaired) {
+TEST(fields2cover_pp_turn_constraint, a_turn_that_cuts_a_corner_is_repaired) {
   F2CRobot robot = makeRobot();
   f2c::pp::DubinsCurves dubins;
-  f2c::pp::ConstrainedTurn constrained;
   const F2CCells band = cornerBand(12.0, 80.0);
   // One pose on each face of the crop corner, each perpendicular to its face:
   // out of the crop on the bottom, back into it on the left.
@@ -125,46 +124,46 @@ TEST(fields2cover_pp_constrained_turn, a_turn_that_cuts_a_corner_is_repaired) {
   ASSERT_GT(lengthOutside(plain, band), 1.0)
       << "the plain turn is expected to cut across the crop";
 
-  const auto res = constrained.createTurn(
-      robot, band, start, start_angle, end, end_angle, dubins);
+  dubins.setFreeSpace(band);
+  f2c::pp::TurnReport report;
+  const F2CPath path = dubins.createTurn(
+      robot, start, start_angle, end, end_angle, &report);
 
-  EXPECT_TRUE(res.inside);
-  EXPECT_TRUE(res.used_waypoint);
-  EXPECT_LT(lengthOutside(res.path, band), 0.05);
-  // Repairing must not cost drivability: the radius still holds, and the two
-  // halves meet at one pose, so the ends are the ones asked for.
-  EXPECT_GT(minRadius(res.path), 0.95 * robot.getMinTurningRadius());
-  EXPECT_NEAR(res.path.getStates().front().point.distance(start), 0.0, 1e-6);
-  EXPECT_NEAR(res.path.getStates().back().point.distance(end), 0.0, 1e-6);
-  EXPECT_GT(res.path.length(), plain.length());
+  EXPECT_TRUE(report.inside);
+  EXPECT_TRUE(report.used_waypoint);
+  EXPECT_LT(lengthOutside(path, band), 0.05);
+  // Staying on the ground must not cost drivability: the radius still holds,
+  // and the two halves meet at one pose, so the ends are the ones asked for.
+  EXPECT_GT(minRadius(path), 0.95 * robot.getMinTurningRadius());
+  EXPECT_NEAR(path.getStates().front().point.distance(start), 0.0, 1e-6);
+  EXPECT_NEAR(path.getStates().back().point.distance(end), 0.0, 1e-6);
+  EXPECT_GT(path.length(), plain.length());
 }
 
-TEST(fields2cover_pp_constrained_turn, no_waypoint_can_widen_a_narrow_band) {
+TEST(fields2cover_pp_turn_constraint, no_waypoint_can_widen_a_narrow_band) {
   F2CRobot robot = makeRobot();
   f2c::pp::DubinsCurves dubins;
-  f2c::pp::ConstrainedTurn constrained;
   // Adjacent swaths (6 m apart) need a teardrop 13.94 m deep; the band is 12.
   // A rectangle has no corner to wrap, so the answer is honest failure.
   const F2CCells band {rectangle(-60.0, 0.0, 60.0, 12.0)};
-  const auto res = constrained.createTurn(
-      robot, band, F2CPoint(0.0, 0.0), M_PI_2,
-      F2CPoint(6.0, 0.0), -M_PI_2, dubins);
+  dubins.setFreeSpace(band);
+  f2c::pp::TurnReport report;
+  dubins.createTurn(robot, F2CPoint(0.0, 0.0), M_PI_2,
+      F2CPoint(6.0, 0.0), -M_PI_2, &report);
 
-  EXPECT_FALSE(res.inside);
-  EXPECT_FALSE(res.used_waypoint);
-  EXPECT_GT(res.length_outside, 0.05);
-  EXPECT_NEAR(res.deepest_outside, 13.937 - 12.0, 0.05);
+  EXPECT_FALSE(report.inside);
+  EXPECT_FALSE(report.used_waypoint);
+  EXPECT_GT(report.length_outside, 0.05);
+  EXPECT_NEAR(report.deepest_outside, 13.937 - 12.0, 0.05);
 }
 
-TEST(fields2cover_pp_constrained_turn, inside_beats_shorter_across_planners) {
+TEST(fields2cover_pp_turn_constraint, inside_beats_shorter_across_planners) {
   F2CRobot robot = makeRobot();
-  f2c::pp::DubinsCurves dubins;
   f2c::pp::ReedsSheppCurves reeds_shepp;
-  f2c::pp::ConstrainedTurn constrained;
   // A u-turn between two ends of one face of an 18 m band. Reeds-Shepp reaches
   // it by reversing the whole way, which leaves the band; the forward turn is
   // the same length and stays in. Length cannot tell them apart, containment
-  // can.
+  // can, and the forward turn is one Reeds-Shepp can drive itself.
   const F2CCells band {rectangle(-60.0, 0.0, 60.0, 18.0)};
   const F2CPoint start(0.0, 0.0), end(12.0, 0.0);
   const double start_angle = M_PI_2, end_angle = -M_PI_2;
@@ -174,39 +173,41 @@ TEST(fields2cover_pp_constrained_turn, inside_beats_shorter_across_planners) {
   ASSERT_GT(lengthOutside(rs_alone, band), 1.0)
       << "Reeds-Shepp alone is expected to leave the band here";
 
-  const auto res = constrained.createTurn(robot, band, start, start_angle,
-      end, end_angle,
-      std::vector<f2c::pp::TurningBase*>{&reeds_shepp, &dubins});
+  reeds_shepp.setFreeSpace(band);
+  f2c::pp::TurnReport report;
+  const F2CPath path = reeds_shepp.createTurn(
+      robot, start, start_angle, end, end_angle, &report);
 
-  EXPECT_TRUE(res.inside);
-  EXPECT_FALSE(res.used_waypoint);
-  EXPECT_EQ(res.planner, 1) << "the forward turn should have been kept";
-  EXPECT_LT(lengthOutside(res.path, band), 0.05);
-  // Choosing the contained answer costs nothing in length here.
-  EXPECT_NEAR(res.path.length(), rs_alone.length(), 0.5);
+  EXPECT_TRUE(report.inside);
+  EXPECT_FALSE(report.used_waypoint);
+  EXPECT_LT(lengthOutside(path, band), 0.05);
+  // Keeping the contained answer costs nothing in length here.
+  EXPECT_NEAR(path.length(), rs_alone.length(), 0.5);
 }
 
-TEST(fields2cover_pp_constrained_turn, a_planner_that_already_fits_is_kept) {
+TEST(fields2cover_pp_turn_constraint, a_planner_that_already_fits_is_kept) {
   F2CRobot robot = makeRobot();
   f2c::pp::DubinsCurves dubins;
-  f2c::pp::ReedsSheppCurves reeds_shepp;
-  f2c::pp::ConstrainedTurn constrained;
-  // Both stay inside; then the shorter one wins, whichever planner it came
-  // from. Reeds-Shepp is never longer than Dubins, so it is listed first.
+  // Given no ground to keep to, a planner answers exactly as it always did.
   const F2CCells band {rectangle(-60.0, 0.0, 60.0, 18.0)};
-  const auto res = constrained.createTurn(robot, band,
-      F2CPoint(0.0, 0.0), M_PI_2, F2CPoint(24.0, 0.0), -M_PI_2, dubins);
-  EXPECT_TRUE(res.inside);
-  EXPECT_FALSE(res.used_waypoint);
-  EXPECT_EQ(res.planner, 0);
+  const F2CPath before = dubins.createTurn(
+      robot, F2CPoint(0.0, 0.0), M_PI_2, F2CPoint(24.0, 0.0), -M_PI_2);
+  dubins.setFreeSpace(band);
+  f2c::pp::TurnReport report;
+  const F2CPath after = dubins.createTurn(robot,
+      F2CPoint(0.0, 0.0), M_PI_2, F2CPoint(24.0, 0.0), -M_PI_2, &report);
+  EXPECT_TRUE(report.inside);
+  EXPECT_FALSE(report.used_waypoint);
+  EXPECT_NEAR(after.length(), before.length(), 1e-9);
 }
 
-TEST(fields2cover_pp_constrained_turn, settings_round_trip) {
-  f2c::pp::ConstrainedTurn turn;
+TEST(fields2cover_pp_turn_constraint, settings_round_trip) {
+  f2c::pp::DubinsCurves turn;
   turn.setWaypointOffset(-1.5);
-  turn.setSampleStep(-0.1);
-  turn.setTolerance(-0.2);
+  turn.setSwathWidth(-6.0);
   EXPECT_NEAR(turn.getWaypointOffset(), 1.5, 1e-9);
-  EXPECT_NEAR(turn.getSampleStep(), 0.1, 1e-9);
-  EXPECT_NEAR(turn.getTolerance(), 0.2, 1e-9);
+  EXPECT_NEAR(turn.getSwathWidth(), 6.0, 1e-9);
+  EXPECT_TRUE(turn.getFreeSpace().isEmpty());
+  turn.setFreeSpace(F2CCells{rectangle(0.0, 0.0, 1.0, 1.0)});
+  EXPECT_FALSE(turn.getFreeSpace().isEmpty());
 }

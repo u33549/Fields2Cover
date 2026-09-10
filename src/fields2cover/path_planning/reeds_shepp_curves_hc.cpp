@@ -39,5 +39,18 @@ bool ReedsSheppCurvesHC::hasContinuousCurvature() const {
   return true;
 }
 
+std::vector<F2CPath> ReedsSheppCurvesHC::alternativeTurns(const F2CRobot& robot,
+    const F2CPoint& start_pos, double start_angle,
+    const F2CPoint& end_pos, double end_angle) {
+  forward_.setDiscretization(this->getDiscretization());
+  forward_.setUsingCache(this->getUsingCache());
+  const F2CPath path = forward_.createTurn(
+      robot, start_pos, start_angle, end_pos, end_angle);
+  if (path.size() < 2) {
+    return {};
+  }
+  return {path};
+}
+
 }  // namespace f2c::pp
 
