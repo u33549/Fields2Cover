@@ -538,3 +538,110 @@ TEST(fields2cover_pp_turn_constraint, a_long_run_down_a_swath_is_still_crop) {
   EXPECT_NEAR(report.length_in_swath, 2.0 * R, 0.1);
   EXPECT_NEAR(report.length_outside, 30.0 - 2.0 * R, 0.1);
 }
+
+TEST(fields2cover_pp_turn_constraint, a_turn_keeps_to_the_route_ground_when_it_can) {
+  F2CRobot robot = makeRobot();
+  // Ground on both sides of the swath ends, but the route travels above.
+  const F2CCells anywhere {rectangle(-60.0, -30.0, 60.0, 30.0)};
+  const F2CCells above {rectangle(-60.0, 0.0, 60.0, 30.0)};
+  const F2CPoint start(0.0, 0.0), end(12.0, 0.0);
+
+  f2c::pp::ReedsSheppCurves plain_planner;
+  const F2CPath shortest = plain_planner.createTurn(
+      robot, start, M_PI_2, end, -M_PI_2);
+  ASSERT_GT(countBackward(shortest), 0)
+      << "the shortest Reeds-Shepp turn here is expected to reverse below";
+
+  f2c::pp::ReedsSheppCurves planner;
+  planner.setFreeSpace(anywhere);
+  planner.setPreferredSpace(above);
+  f2c::pp::TurnReport report;
+  const F2CPath path = planner.createTurn(
+      robot, start, M_PI_2, end, -M_PI_2, &report);
+
+  // Both turns are equally clear of the crop, so the preference decides.
+  EXPECT_TRUE(report.inside);
+  EXPECT_TRUE(report.in_preferred);
+  EXPECT_NEAR(report.length_off_preferred, 0.0, 1e-9);
+  EXPECT_EQ(countBackward(path), 0);
+  EXPECT_NEAR(path.length(), shortest.length(), 1e-6);
+}
+
+TEST(fields2cover_pp_turn_constraint, the_crop_outranks_the_preference) {
+  F2CRobot robot = makeRobot();
+  const double R = robot.getMinTurningRadius();
+  // A band deep enough for the turn, and a preference too shallow for any
+  // turn between these poses: a u-turn to the neighbouring swath reaches a
+  // full radius out and the preference allows four metres.
+  const F2CCells band {rectangle(-60.0, 0.0, 60.0, 30.0)};
+  const F2CCells shallow {rectangle(-60.0, 0.0, 60.0, 4.0)};
+  const F2CPoint start(0.0, 0.0), end(2.0 * R, 0.0);
+
+  f2c::pp::DubinsCurves bare;
+  bare.setFreeSpace(band);
+  const F2CPath without = bare.createTurn(robot, start, M_PI_2, end, -M_PI_2);
+
+  f2c::pp::DubinsCurves planner;
+  planner.setFreeSpace(band);
+  planner.setPreferredSpace(shallow);
+  f2c::pp::TurnReport report;
+  const F2CPath path = planner.createTurn(
+      robot, start, M_PI_2, end, -M_PI_2, &report);
+
+  // Nothing satisfies the preference, so it gives way rather than pushing the
+  // turn somewhere worse. Making the preference the free space instead would
+  // rank the headland and the crop alike and send the turn into the crop.
+  EXPECT_TRUE(report.inside);
+  EXPECT_FALSE(report.in_preferred);
+  EXPECT_NEAR(path.length(), without.length(), 1e-9);
+  EXPECT_EQ(path.size(), without.size());
+}
+
+TEST(fields2cover_pp_turn_constraint, an_unset_preference_changes_nothing) {
+  F2CRobot robot = makeRobot();
+  const F2CCells band {rectangle(-60.0, 0.0, 60.0, 30.0)};
+  const double cases[3][6] {
+      {0.0, 0.0, M_PI_2, 12.0, 0.0, -M_PI_2},
+      {0.0, 0.0, M_PI_2, 6.0, 0.0, -M_PI_2},
+      {3.0, 1.0, 0.4, 27.0, 9.0, 2.7}};
+
+  for (auto&& c : cases) {
+    SCOPED_TRACE(c[0]);
+    f2c::pp::DubinsCurves bare, told;
+    bare.setFreeSpace(band);
+    told.setFreeSpace(band);
+    told.setPreferredSpace(F2CCells());
+    f2c::pp::TurnReport report;
+    const F2CPath a = bare.createTurn(
+        robot, F2CPoint(c[0], c[1]), c[2], F2CPoint(c[3], c[4]), c[5]);
+    const F2CPath b = told.createTurn(
+        robot, F2CPoint(c[0], c[1]), c[2], F2CPoint(c[3], c[4]), c[5], &report);
+    ASSERT_EQ(a.size(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+      EXPECT_NEAR(a[i].point.distance(b[i].point), 0.0, 1e-12);
+    }
+    EXPECT_TRUE(report.in_preferred);
+    EXPECT_NEAR(report.length_off_preferred, 0.0, 1e-12);
+  }
+  EXPECT_TRUE(f2c::pp::DubinsCurves().getPreferredSpace().isEmpty());
+}
+
+TEST(fields2cover_pp_turn_constraint, the_report_measures_the_ground_left_behind) {
+  F2CRobot robot = makeRobot();
+  const double R = robot.getMinTurningRadius();
+  const F2CCells band {rectangle(-60.0, 0.0, 60.0, 30.0)};
+  const F2CCells shallow {rectangle(-60.0, 0.0, 60.0, 4.0)};
+
+  f2c::pp::DubinsCurves planner;
+  planner.setFreeSpace(band);
+  planner.setPreferredSpace(shallow);
+  f2c::pp::TurnReport report;
+  planner.createTurn(robot, F2CPoint(0.0, 0.0), M_PI_2,
+      F2CPoint(2.0 * R, 0.0), -M_PI_2, &report);
+
+  // The turn is the half circle of radius R over the two swath ends. What
+  // sticks out above y = 4 is the arc between the two crossings, so
+  // R * (pi - 2 * asin(4 / R)).
+  const double expected = R * (M_PI - 2.0 * std::asin(4.0 / R));
+  EXPECT_NEAR(report.length_off_preferred, expected, 0.2);
+}

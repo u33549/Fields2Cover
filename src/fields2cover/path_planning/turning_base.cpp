@@ -4,9 +4,11 @@
 //                        BSD-3 License
 //=============================================================================
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <utility>
+#include <vector>
 #include "fields2cover/path_planning/turning_base.h"
 
 namespace f2c::pp {
@@ -40,7 +42,12 @@ void measureOutside(const F2CPath& path, const F2CCells& free_space,
     double step, double half_swath, double strip_length,
     const F2CPoint& in_pos, double in_ang,
     const F2CPoint& out_pos, double out_ang,
-    double* length_out, double* deepest_out, double* in_swath_out) {
+    double* length_out, double* deepest_out, double* in_swath_out,
+    double abort_over = std::numeric_limits<double>::infinity()) {
+  // abort_over lets a caller that only asks "does it fit?" stop at the first
+  // metre that says no. Measuring a point against the ground is the expensive
+  // step, and a candidate that leaves it early leaves it whatever the rest of
+  // the path does.
   *length_out = 0.0;
   *deepest_out = 0.0;
   *in_swath_out = 0.0;
@@ -68,6 +75,9 @@ void measureOutside(const F2CPath& path, const F2CCells& free_space,
         continue;
       }
       *length_out += len / n;
+      if (*length_out > abort_over) {
+        return;
+      }
       *deepest_out = std::max(*deepest_out, p.distance(free_space));
     }
   }
@@ -237,11 +247,43 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
   const double half_swath = 0.5 * this->swath_width_;
   const double strip_length = robot.getMinTurningRadius();
   const double in_ang = start_angle + M_PI;
+  // Does it fit? -- the cheap question: stop at the first metre off the ground.
+  auto fits = [&](const F2CPath& p) {
+    double out = 0.0, deep = 0.0, in_swath = 0.0;
+    measureOutside(p, this->free_space_, this->discretization * 10.0,
+        half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
+        &out, &deep, &in_swath, 0.05);
+    return out <= 0.05;
+  };
+  // The second, softer question: does it also keep to the ground the route
+  // travels through? Ground outside it is still clear of the crop.
+  auto measurePreferred = [&](const F2CPath& p, TurnReport* r) {
+    if (this->preferred_space_.isEmpty()) {
+      r->in_preferred = true;
+      r->length_off_preferred = 0.0;
+      return;
+    }
+    double deep = 0.0, in_swath = 0.0;
+    measureOutside(p, this->preferred_space_, this->discretization * 10.0,
+        half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
+        &r->length_off_preferred, &deep, &in_swath);
+    r->in_preferred = r->length_off_preferred <= 0.05;
+  };
+  // The cheap form of the same question, for ranking candidates.
+  auto fitsPreferred = [&](const F2CPath& p) {
+    if (this->preferred_space_.isEmpty()) { return true; }
+    double out = 0.0, deep = 0.0, in_swath = 0.0;
+    measureOutside(p, this->preferred_space_, this->discretization * 10.0,
+        half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
+        &out, &deep, &in_swath, 0.05);
+    return out <= 0.05;
+  };
   auto measure = [&](const F2CPath& p, TurnReport* r) {
     measureOutside(p, this->free_space_, this->discretization * 10.0,
         half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
         &r->length_outside, &r->deepest_outside, &r->length_in_swath);
     r->inside = r->length_outside <= 0.05;
+    measurePreferred(p, r);
   };
 
   // The shortest this planner can drive is the one it just gave; if that
@@ -249,17 +291,28 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
   // inside, so do not ask.
   TurnReport best_rep;
   F2CPath best;
+  // Two answers are tracked: the shortest that stays off the crop, and the
+  // shortest that also keeps to the ground the route travels through.
+  TurnReport pref_rep;
+  F2CPath pref;
+  const double radius = robot.getMinTurningRadius();
+  // What the preference is allowed to cost. Staying in the corridor is worth
+  // a detour, but not one longer than driving a full circle -- past that the
+  // shorter turn that is merely clear of the crop is the better answer.
+  const double preferred_budget = 2.0 * M_PI * radius;
   measure(plain, &best_rep);
   if (best_rep.inside) {
-    if (report != nullptr) { *report = best_rep; }
-    return plain;
+    best = plain;
+    if (best_rep.in_preferred) {
+      if (report != nullptr) { *report = best_rep; }
+      return plain;
+    }
   }
 
   // It does not. Whatever else this planner can drive between the two poses
   // is longer, but length is not what is wrong with the answer.
   TurnReport shallow_rep = best_rep;
   F2CPath shallow = plain;
-  best = F2CPath();
   for (const F2CPath& p :
        alternativeTurns(robot, start_pos, start_angle, end_pos, end_angle)) {
     if (p.size() < 2) { continue; }
@@ -269,13 +322,16 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
       if (best.size() == 0 || p.length() < best.length()) {
         best = p; best_rep = rep;
       }
+      if (rep.in_preferred && (pref.size() == 0 || p.length() < pref.length())) {
+        pref = p; pref_rep = rep;
+      }
     } else if (rep.deepest_outside < shallow_rep.deepest_outside) {
       shallow = p; shallow_rep = rep;
     }
   }
-  if (best.size() > 1) {
-    if (report != nullptr) { *report = best_rep; }
-    return best;
+  if (pref.size() > 1) {
+    if (report != nullptr) { *report = pref_rep; }
+    return pref;
   }
 
   // Nothing this planner drives stays on the ground it was given. The turn
@@ -283,8 +339,28 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
   // a little inside each concave corner and headed along it. How far inside
   // decides how long the detour is and the best distance differs per corner,
   // so try a ladder and keep the shortest that fits.
-  const double radius = robot.getMinTurningRadius();
+  // Only corners the turn could plausibly go through. Going start -> way ->
+  // end costs at least the two straight legs, so a corner outside the ellipse
+  // whose foci are the poses and whose extra length is one full circle cannot
+  // give a turn worth driving. Two circles, not one: measured on the bench,
+  // one circle prunes waypoints that were being used and leaves 18 turns on
+  // the crop instead of 10; two matches the unbounded answer exactly.
+  // Without any bound the ladder walks every
+  // concave corner of the free space -- on a real headland ring that is tens
+  // to hundreds of corners, five offsets and two sides each, every candidate
+  // measured against the whole field.
+  const double reach = start_pos.distance(end_pos) + 4.0 * M_PI * radius;
+  // Plain numbers, not paths: F2CPath is expensive to keep by the hundred,
+  // and the winner is cheap to build again once it is known which it is.
+  struct Candidate {
+    double x, y, angle, length;
+  };
+  std::vector<Candidate> candidates;
   for (const auto& corner : concaveCorners(this->free_space_)) {
+    if (start_pos.distance(corner.first) +
+        corner.first.distance(end_pos) > reach) {
+      continue;
+    }
     for (const double frac : {1.0, 0.5, 0.25, 0.1, 0.05}) {
       const double offset = this->waypoint_offset_ * frac * radius;
       const F2CPoint way {
@@ -301,31 +377,76 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
         if (second.size() < 2) { continue; }
         F2CPath joined = first;
         joined += second;
-        TurnReport rep;
-        measure(joined, &rep);
-        if (!rep.inside) { continue; }
         if (minRadius(joined) < 0.95 * radius) { continue; }
-        if (best.size() == 0 || joined.length() < best.length()) {
-          best = joined;
-          best_rep = rep;
-          best_rep.used_waypoint = true;
-          best_rep.waypoint = way;
-        }
+        candidates.push_back(
+            {way.getX(), way.getY(), way_angle, joined.length()});
       }
     }
+  }
+  // Shortest first, and stop at the first that fits: that one is the shortest
+  // that fits. Measuring every candidate to then pick the shortest asks the
+  // expensive question of candidates already known to be worse.
+  std::sort(candidates.begin(), candidates.end(),
+      [](const Candidate& a, const Candidate& b) {
+        return a.length < b.length;
+      });
+  for (const Candidate& c : candidates) {
+    // Sorted shortest first, so once a candidate costs more than the answer
+    // in hand plus what the preference is worth, neither it nor anything
+    // after it can be chosen.
+    if (best.size() > 1 && c.length > best.length() + preferred_budget) {
+      break;
+    }
+    const F2CPoint way {c.x, c.y};
+    F2CPath joined = plainTurn(robot, start_pos, start_angle, way, c.angle);
+    joined += plainTurn(robot, way, c.angle, end_pos, end_angle);
+    if (!fits(joined)) { continue; }
+    // Measure in full only what is actually taken: the cheap questions above
+    // settle the ranking, and most candidates lose it.
+    const bool keeps_to_route = fitsPreferred(joined);
+    if (best.size() == 0 || joined.length() < best.length()) {
+      best = joined;
+      measure(joined, &best_rep);
+      best_rep.used_waypoint = true;
+      best_rep.waypoint = way;
+    }
+    if (keeps_to_route) {
+      // Sorted shortest first, so this is the shortest that keeps to the
+      // route's ground; nothing further along can beat it.
+      pref = joined;
+      measure(joined, &pref_rep);
+      pref_rep.used_waypoint = true;
+      pref_rep.waypoint = way;
+      break;
+    }
+  }
+
+  // The answer, in order: off the crop and on the route's ground, unless
+  // that costs more than driving a full circle; then merely off the crop;
+  // then, if nothing fits, the one that goes least deep into it.
+  if (pref.size() > 1 &&
+      (best.size() < 2 || pref.length() <= best.length() + preferred_budget)) {
+    if (report != nullptr) { *report = pref_rep; }
+    return pref;
   }
   if (best.size() > 1) {
     if (report != nullptr) { *report = best_rep; }
     return best;
   }
-
-  // No turn fits. Hand back the one that goes least deep and say so.
   if (report != nullptr) { *report = shallow_rep; }
   return shallow.size() > 1 ? shallow : plain;
 }
 
 const F2CCells& TurningBase::getFreeSpace() const {
   return this->free_space_;
+}
+
+const F2CCells& TurningBase::getPreferredSpace() const {
+  return this->preferred_space_;
+}
+
+void TurningBase::setPreferredSpace(const F2CCells& preferred) {
+  this->preferred_space_ = preferred;
 }
 
 void TurningBase::setFreeSpace(const F2CCells& free_space) {

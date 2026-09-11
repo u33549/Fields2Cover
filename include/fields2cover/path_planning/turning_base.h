@@ -34,6 +34,10 @@ struct TurnReport {
   double deepest_outside {0.0};
   /// The waypoint used, when one was.
   F2CPoint waypoint;
+  /// The turn also stays on the ground the route travels through.
+  bool in_preferred {true};
+  /// Length driven off that ground but still clear of the crop [m].
+  double length_off_preferred {0.0};
 };
 
 /// Base class for turn planners
@@ -123,6 +127,20 @@ class TurningBase {
   /// nothing changes.
   void setFreeSpace(const F2CCells& free_space);
 
+  /// Get the ground the turns should keep to when they can. Empty means the
+  /// whole free space is equally good.
+  const F2CCells& getPreferredSpace() const;
+  /// @brief Set the ground the turns should keep to when they can.
+  /// @details Not all drivable ground is equally welcome. A route travels
+  /// down the middle of the headland, so a turn that swings out to the field
+  /// edge is clear of the crop but nowhere the route planned to be. This is
+  /// a preference, not a limit: among the turns that stay off the crop the
+  /// one that also stays here is kept, and if none does the shortest that
+  /// stays off the crop is. Making it the free space instead would rank the
+  /// field edge and the crop as equally forbidden, and a turn with nowhere
+  /// to go would then choose the crop. Left empty, nothing changes.
+  void setPreferredSpace(const F2CCells& preferred);
+
   /// Get the width of the swaths the turns join [m].
   double getSwathWidth() const;
   /// @brief Set the width of the swaths the turns join [m].
@@ -164,6 +182,7 @@ class TurningBase {
   double discretization {0.01};
   bool using_cache {true};
   F2CCells free_space_;
+  F2CCells preferred_space_;
   double swath_width_ {0.0};
   double waypoint_offset_ {1.0};
 };
