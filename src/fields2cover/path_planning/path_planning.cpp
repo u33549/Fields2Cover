@@ -172,8 +172,18 @@ std::optional<Turn> planSpanTurn(const Span& s,
     const double fwd_off = s.pin_out ? 0.0 : s.lo + frac * (s.out_reach - s.lo);
     t.entry = s.first.getPointAlong(cursor, back_off);
     t.exit = s.last_corner.getPointAlong(s.after, fwd_off);
-    t.arc = turn.createTurn(robot, t.entry, s.in_angle, t.exit, s.out_angle);
+    TurnReport rep;
+    t.arc = turn.createTurn(robot, t.entry, s.in_angle, t.exit, s.out_angle, &rep);
     if (t.arc.size() == 0) {
+      continue;
+    }
+    // A turn the planner could not fit on drivable ground does not come back as
+    // nothing: it comes back as the one that goes least deep into the crop. Ask
+    // before taking it, or a corner gets rounded at the crop's expense -- the
+    // offsets further down the ladder start further back and often do fit, and
+    // if none does, a square corner is the honest answer. With no free space
+    // the report says inside, so nothing here changes.
+    if (!rep.inside) {
       continue;
     }
 
