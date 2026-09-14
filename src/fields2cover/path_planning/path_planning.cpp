@@ -206,6 +206,51 @@ std::optional<Turn> planSpanTurn(const Span& s,
   return {};
 }
 
+// One leg of the track, from `from` to `to`.
+//
+// A straight is not drivable ground just because it joins two points the route
+// chose. Only the corners ever went through the turn planner; nothing asked
+// what runs between them, so a leg could cross the crop and still come back
+// looking clean -- the route drew it along a polygon, and a polygon knows
+// nothing about where the machine may drive.
+//
+// Where a leg leaves the free space, plan it the way a corner is planned: the
+// same two points, the leg's own heading at both ends, so the turn planner's
+// detour search can route around it. Given no free space the leg is driven
+// exactly as it always was.
+void appendLeg(F2CPath& path, const F2CPoint& from, const F2CPoint& to,
+    const F2CRobot& robot, TurningBase& turn,
+    f2c::types::PathSectionType type) {
+  const double len = from.distance(to);
+  if (len < 1e-6) {
+    return;
+  }
+  const F2CCells& free_space = turn.getFreeSpace();
+  if (!free_space.isEmpty()) {
+    // Sampled at the midpoints, the way the turn planner measures itself: a leg
+    // that merely starts or ends on the border -- a swath end always does -- is
+    // not off the ground for that alone.
+    const double step = std::max(0.25, turn.getDiscretization() * 10.0);
+    const int n = std::max(1, static_cast<int>(std::ceil(len / step)));
+    bool leaves = false;
+    for (int i = 0; i < n && !leaves; ++i) {
+      const double u = (i + 0.5) / n;
+      leaves = !free_space.isPointIn(
+          F2CPoint(from.getX() + (to.getX() - from.getX()) * u,
+                   from.getY() + (to.getY() - from.getY()) * u));
+    }
+    if (leaves) {
+      const double ang = (to - from).getAngleFromPoint();
+      F2CPath around = turn.createTurn(robot, from, ang, to, ang);
+      if (around.size() > 1) {
+        path += around;
+        return;
+      }
+    }
+  }
+  path.appendStraight(from, to, robot.getCruiseVel(), type);
+}
+
 // Follow `poly`: straight runs as they are, corners through the turn planner.
 // A corner only a turn cutting past `cut_tol` could round is left square.
 void appendRoundedTrack(
@@ -219,7 +264,7 @@ void appendRoundedTrack(
   size_t i = 0;
   while (i < n) {
     if (sweeps[i] < robot.getMinSweep()) {
-      path.appendStraight(cursor, poly[i], robot.getCruiseVel(),
+      appendLeg(path, cursor, poly[i], robot, turn,
           f2c::types::PathSectionType::HL_SWATH);
       cursor = poly[i];
       ++i;
@@ -246,19 +291,19 @@ void appendRoundedTrack(
     }
 
     if (rounded) {
-      path.appendStraight(cursor, rounded->entry, robot.getCruiseVel(),
+      appendLeg(path, cursor, rounded->entry, robot, turn,
           f2c::types::PathSectionType::HL_SWATH);
       path += rounded->arc;  // as returned, reverse legs included
       cursor = rounded->exit;
       i = last + 1;
     } else {
-      path.appendStraight(cursor, poly[i], robot.getCruiseVel(),
+      appendLeg(path, cursor, poly[i], robot, turn,
           f2c::types::PathSectionType::HL_SWATH);
       cursor = poly[i];
       ++i;
     }
   }
-  path.appendStraight(cursor, poly.back(), robot.getCruiseVel(),
+  appendLeg(path, cursor, poly.back(), robot, turn,
       f2c::types::PathSectionType::HL_SWATH);
 }
 

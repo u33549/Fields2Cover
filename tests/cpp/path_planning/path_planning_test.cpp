@@ -354,3 +354,95 @@ TEST(fields2cover_pp_pp, tightCornersAreFoldedIntoOneTurn) {
   EXPECT_LT(maxTurnSweep(path), M_PI + 0.2);
 }
 
+
+namespace {
+
+F2CCell box(double x0, double y0, double x1, double y1) {
+  F2CLinearRing ring;
+  ring.addPoint(F2CPoint(x0, y0));
+  ring.addPoint(F2CPoint(x1, y0));
+  ring.addPoint(F2CPoint(x1, y1));
+  ring.addPoint(F2CPoint(x0, y1));
+  ring.addPoint(F2CPoint(x0, y0));
+  return F2CCell(ring);
+}
+
+// Metres of a path that run inside `blocked`, sampled along the states.
+double lengthInside(const F2CPath& path, const F2CCells& blocked) {
+  double inside = 0.0;
+  const auto& st = path.getStates();
+  for (size_t i = 0; i + 1 < st.size(); ++i) {
+    const F2CPoint a = st[i].point, b = st[i + 1].point;
+    const double len = a.distance(b);
+    const int n = std::max(1, static_cast<int>(std::ceil(len / 0.25)));
+    for (int t = 0; t < n; ++t) {
+      const double u = (t + 0.5) / n;
+      if (blocked.isPointIn(F2CPoint(a.getX() + (b.getX() - a.getX()) * u,
+                                     a.getY() + (b.getY() - a.getY()) * u))) {
+        inside += len / n;
+      }
+    }
+  }
+  return inside;
+}
+
+}  // namespace
+
+// A route's straight legs are ground too. The corners always went through the
+// turn planner; what ran between them was driven blind, so a leg could cross
+// the crop and the path still came back looking complete.
+TEST(fields2cover_pp_pp, a_straight_leg_is_asked_about_the_crop_too) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMaxCurv(1.0 / 6.0);
+
+  const F2CCells crop {box(-6.0, -9.0, 6.0, 9.0)};
+  const F2CCells free_space = F2CCells(box(-70.0, -40.0, 70.0, 40.0))
+      .difference(crop);
+
+  // The route walks up out of the swath, straight across, and back down. That
+  // middle leg runs through the crop, and no corner of it is a corner.
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(-40.0, 0.0));
+  mp.addPoint(F2CPoint(40.0, 0.0));
+
+  f2c::pp::DubinsCurves blind;
+  const F2CPath loose = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(-40.0, -25.0), 0.0, mp, F2CPoint(40.0, -25.0), 0.0, blind);
+
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  const F2CPath kept = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(-40.0, -25.0), 0.0, mp, F2CPoint(40.0, -25.0), 0.0, told);
+
+  ASSERT_GT(loose.size(), 1u);
+  ASSERT_GT(kept.size(), 1u);
+  // Told nothing, the leg is driven straight through the crop.
+  EXPECT_GT(lengthInside(loose, crop), 10.0);
+  // Told where it may drive, it goes around.
+  EXPECT_LT(lengthInside(kept, crop), 0.5);
+  EXPECT_GT(kept.length(), loose.length());
+}
+
+// Without a free space the legs are driven exactly as they always were.
+TEST(fields2cover_pp_pp, no_free_space_leaves_the_legs_alone) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMaxCurv(1.0 / 6.0);
+
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(-40.0, 0.0));
+  mp.addPoint(F2CPoint(40.0, 0.0));
+
+  f2c::pp::DubinsCurves a, b;
+  b.setFreeSpace(F2CCells());
+  const F2CPath p1 = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(-40.0, -25.0), 0.0, mp, F2CPoint(40.0, -25.0), 0.0, a);
+  const F2CPath p2 = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(-40.0, -25.0), 0.0, mp, F2CPoint(40.0, -25.0), 0.0, b);
+
+  ASSERT_EQ(p1.size(), p2.size());
+  for (size_t i = 0; i < p1.size(); ++i) {
+    EXPECT_NEAR(p1[i].point.distance(p2[i].point), 0.0, 1e-12);
+  }
+}
