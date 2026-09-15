@@ -475,3 +475,30 @@ TEST(fields2cover_pp_pp, a_corner_that_does_not_fit_is_not_rounded_through_the_c
   EXPECT_LT(lengthInside(path, crop), 0.5);
   EXPECT_GE(path.countSharpTurns(), 1u);
 }
+
+// A route that leaves a swath end by a leg shorter than the turn after it. The
+// turn is pinned to the route's last point when the leg into it is short; it
+// was never pinned to the first, so this corner was left square.
+TEST(fields2cover_pp_pp, a_short_first_leg_turns_from_the_swath_end) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMaxCurv(1.0 / 6.0);
+
+  // Headland band 7.5 m deep above the crop; the route climbs 4.25 m out of
+  // the swath, runs 48 m along the band and drops back in.
+  const F2CCells crop {box(-60.0, -60.0, 110.0, 0.0)};
+  const F2CCells free_space = F2CCells(box(-60.0, -60.0, 110.0, 7.5))
+      .difference(crop);
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(0.0, 4.25));
+  mp.addPoint(F2CPoint(48.0, 4.25));
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  const F2CPath path = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(0.0, 0.0), M_PI / 2.0, mp, F2CPoint(48.0, 0.0),
+      -M_PI / 2.0, told);
+
+  ASSERT_GT(path.size(), 1u);
+  EXPECT_EQ(path.countSharpTurns(), 0u);
+  EXPECT_LT(lengthInside(path, crop), 0.5);
+}

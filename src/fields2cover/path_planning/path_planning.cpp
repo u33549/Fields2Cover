@@ -299,6 +299,27 @@ void appendRoundedTrack(
           cut_tol, continuous);
       last = j;
     }
+    // A turn is pinned to the route's last point when the leg into it is too
+    // short to back off along, but never to its first: the start heading holds
+    // no sweep, so the loop walks past it. A first leg shorter than the corner
+    // after it needs then left that corner square. Start the turn at the pinned
+    // point instead.
+    if (!rounded && i == 1 && start_angle && sweeps[0] < robot.getMinSweep() &&
+        cursor.distance(poly.front()) < 1e-9) {
+      for (size_t j = 1; j <= robot.getMaxCornerSpan() && j < n && !rounded; ++j) {
+        if (j + 1 == n && !end_angle) {
+          break;
+        }
+        const std::optional<Span> s = spanGeometry(poly, sweeps, 0, j, cursor,
+            robot, cut_tol, continuous, start_angle, end_angle);
+        if (!s) {
+          continue;
+        }
+        rounded = planSpanTurn(*s, poly, 0, j, cursor, robot, turn,
+            cut_tol, continuous);
+        last = j;
+      }
+    }
 
     if (rounded) {
       appendLeg(path, cursor, rounded->entry, robot, turn,
