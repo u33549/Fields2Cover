@@ -446,3 +446,32 @@ TEST(fields2cover_pp_pp, no_free_space_leaves_the_legs_alone) {
     EXPECT_NEAR(p1[i].point.distance(p2[i].point), 0.0, 1e-12);
   }
 }
+
+// A corner no turn can round on drivable ground stays square. The turn planner
+// never returns nothing -- where nothing fits it returns the turn that goes
+// least deep into the crop -- and taking that rounded the corner through it.
+TEST(fields2cover_pp_pp, a_corner_that_does_not_fit_is_not_rounded_through_the_crop) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMaxCurv(1.0 / 6.0);
+
+  // An L of ground around the corner of the crop. A quarter turn of radius R
+  // clears the crop's corner only from legs R (1 - cos 45) = 1.76 m out, and a
+  // turn can swing over to the far wall to get that -- so the L has to be
+  // narrower than that for no turn to fit. 1.5 m it is.
+  const F2CCells crop {box(-60.0, -60.0, 0.0, 0.0)};
+  const F2CCells free_space = F2CCells(box(-60.0, -60.0, 1.5, 1.5))
+      .difference(crop);
+
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(0.75, 0.75));
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  const F2CPath path = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(-40.0, 0.75), 0.0, mp, F2CPoint(0.75, -40.0), -M_PI / 2.0,
+      told);
+
+  ASSERT_GT(path.size(), 1u);
+  EXPECT_LT(lengthInside(path, crop), 0.5);
+  EXPECT_GE(path.countSharpTurns(), 1u);
+}
