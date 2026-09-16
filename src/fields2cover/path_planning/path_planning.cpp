@@ -166,10 +166,37 @@ std::optional<Turn> planSpanTurn(const Span& s,
       std::array<double, 6>{1.0, 0.75, 0.5, 0.25, 0.1, 0.0} :
       std::array<double, 6>{0.0, 0.1, 0.25, 0.5, 0.75, 1.0};
 
+  std::vector<std::pair<double, double>> offsets;
   for (const double frac : fracs) {
+    offsets.emplace_back(s.pin_in ? 0.0 : s.lo + frac * (s.in_reach - s.lo),
+        s.pin_out ? 0.0 : s.lo + frac * (s.out_reach - s.lo));
+  }
+  // A jog pinned at one end has one clean answer -- two arcs, no straight -- and
+  // the offsets around it can sit in a window narrower than the ladder's steps,
+  // which then walks over them. Offer where those two arcs land, measured in the
+  // pinned pose's frame, and a little past it.
+  if (!s.uturn && s.pin_in != s.pin_out && s.net < 0.2) {
+    const double r = robot.getTurnRadius(s.net, continuous);
+    const F2CPoint& pose = s.pin_in ? s.first : s.last_corner;
+    const double h = s.pin_in ? s.in_angle : s.out_angle;
+    const F2CPoint rel = s.pin_in ? s.last_corner - pose : pose - s.first;
+    const double sep =
+        std::fabs(std::cos(h) * rel.getY() - std::sin(h) * rel.getX());
+    const double along = std::cos(h) * rel.getX() + std::sin(h) * rel.getY();
+    const double c = std::max(0.0, 1.0 - sep / (2.0 * r));
+    const double need = 2.0 * r * std::sqrt(std::max(0.0, 1.0 - c * c)) - along;
+    const double room = s.pin_in ? s.last_corner.distance(s.after) :
+        cursor.distance(s.first);
+    for (const double m : {0.05, 0.1, 0.2, 0.35}) {
+      const double off = need + m * r;
+      if (off > 0.0 && off <= room) {
+        offsets.emplace_back(s.pin_in ? 0.0 : off, s.pin_in ? off : 0.0);
+      }
+    }
+  }
+
+  for (const auto& [back_off, fwd_off] : offsets) {
     Turn t;
-    const double back_off = s.pin_in ? 0.0 : s.lo + frac * (s.in_reach - s.lo);
-    const double fwd_off = s.pin_out ? 0.0 : s.lo + frac * (s.out_reach - s.lo);
     t.entry = s.first.getPointAlong(cursor, back_off);
     t.exit = s.last_corner.getPointAlong(s.after, fwd_off);
     TurnReport rep;
@@ -299,6 +326,27 @@ void appendRoundedTrack(
           cut_tol, continuous);
       last = j;
     }
+    // A turn is pinned to the route's last point when the leg into it is too
+    // short to back off along, but never to its first: the start heading holds
+    // no sweep, so the loop walks past it. A first leg shorter than the corner
+    // after it needs then left that corner square. Start the turn at the pinned
+    // point instead.
+    if (!rounded && i == 1 && start_angle && sweeps[0] < robot.getMinSweep() &&
+        cursor.distance(poly.front()) < 1e-9) {
+      for (size_t j = 1; j <= robot.getMaxCornerSpan() && j < n && !rounded; ++j) {
+        if (j + 1 == n && !end_angle) {
+          break;
+        }
+        const std::optional<Span> s = spanGeometry(poly, sweeps, 0, j, cursor,
+            robot, cut_tol, continuous, start_angle, end_angle);
+        if (!s) {
+          continue;
+        }
+        rounded = planSpanTurn(*s, poly, 0, j, cursor, robot, turn,
+            cut_tol, continuous);
+        last = j;
+      }
+    }
 
     if (rounded) {
       appendLeg(path, cursor, rounded->entry, robot, turn,
@@ -414,6 +462,27 @@ F2CPath PathPlanning::planPathForConnection(const F2CRobot& robot,
       F2CLineString(pts).simplify(robot.getTrackSimplifyTol()).toVectorPoint();
   if (poly.size() < 2) {
     return {};
+  }
+
+  // The hop limit above keeps a long reversal off the direct turn, and a span
+  // over the whole track is refused as a detour -- so where the one turn between
+  // the ends is the only one that fits, nothing ever asked for it. Where free
+  // space says it fits, and it turns no more than the track does, it is the
+  // track's best rounding.
+  if (!turn.getFreeSpace().isEmpty()) {
+    TurnReport rep;
+    F2CPath whole = turn.createTurn(robot, p1, ang1, p2, ang2, &rep);
+    double turned = 0.0;
+    for (size_t k = 1; k < whole.size(); ++k) {
+      turned += F2CPoint::getAngleDiffAbs(whole[k].angle, whole[k - 1].angle);
+    }
+    double total = 0.0;
+    for (const double s : cornerSweeps(poly, ang1, ang2)) {
+      total += s;
+    }
+    if (whole.size() > 1 && rep.inside && turned <= total + robot.getTurnSlack()) {
+      return whole;
+    }
   }
 
   F2CPath path;

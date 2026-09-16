@@ -396,7 +396,9 @@ TEST(fields2cover_pp_pp, a_straight_leg_is_asked_about_the_crop_too) {
   robot.setCruiseVel(2.0);
   robot.setMaxCurv(1.0 / 6.0);
 
-  const F2CCells crop {box(-6.0, -9.0, 6.0, 9.0)};
+  // The crop reaches down past the swath ends, so the two cannot be joined by
+  // one turn: the leg is what has to go around it.
+  const F2CCells crop {box(-6.0, -60.0, 6.0, 9.0)};
   const F2CCells free_space = F2CCells(box(-70.0, -40.0, 70.0, 40.0))
       .difference(crop);
 
@@ -474,4 +476,98 @@ TEST(fields2cover_pp_pp, a_corner_that_does_not_fit_is_not_rounded_through_the_c
   ASSERT_GT(path.size(), 1u);
   EXPECT_LT(lengthInside(path, crop), 0.5);
   EXPECT_GE(path.countSharpTurns(), 1u);
+}
+
+// A route that leaves a swath end by a leg shorter than the turn after it. The
+// turn is pinned to the route's last point when the leg into it is short; it
+// was never pinned to the first, so this corner was left square.
+TEST(fields2cover_pp_pp, a_short_first_leg_turns_from_the_swath_end) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMaxCurv(1.0 / 6.0);
+
+  // Headland band 7.5 m deep above the crop; the route climbs 4.25 m out of
+  // the swath, runs 48 m along the band and drops back in.
+  const F2CCells crop {box(-60.0, -60.0, 110.0, 0.0)};
+  const F2CCells free_space = F2CCells(box(-60.0, -60.0, 110.0, 7.5))
+      .difference(crop);
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(0.0, 4.25));
+  mp.addPoint(F2CPoint(48.0, 4.25));
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  const F2CPath path = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(0.0, 0.0), M_PI / 2.0, mp, F2CPoint(48.0, 0.0),
+      -M_PI / 2.0, told);
+
+  ASSERT_GT(path.size(), 1u);
+  EXPECT_EQ(path.countSharpTurns(), 0u);
+  EXPECT_LT(lengthInside(path, crop), 0.5);
+}
+
+// Two swath ends 24 m apart, facing out of the crop. Two separate corner turns
+// need 12.25 m of the leg each, so they do not fit on it -- but the one u-turn
+// between the ends does, and it fits the band. A reversal that long was never
+// offered the direct turn, and a span over the whole track reads as a detour.
+TEST(fields2cover_pp_pp, a_long_reversal_takes_the_u_turn_that_fits) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMaxCurv(1.0 / 6.0);
+
+  const F2CCells crop {box(-60.0, -60.0, 90.0, 0.0)};
+  const F2CCells free_space = F2CCells(box(-60.0, -60.0, 90.0, 7.5))
+      .difference(crop);
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(0.0, 4.25));
+  mp.addPoint(F2CPoint(24.0, 4.25));
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  const F2CPath path = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(0.0, 0.0), M_PI / 2.0, mp, F2CPoint(24.0, 0.0),
+      -M_PI / 2.0, told);
+
+  ASSERT_GT(path.size(), 1u);
+  EXPECT_EQ(path.countSharpTurns(), 0u);
+  EXPECT_LT(lengthInside(path, crop), 0.5);
+  // Half a circle of radius 6 and the 12 m between its ends.
+  EXPECT_NEAR(path.length(), M_PI * 6.0 + 12.0, 0.5);
+}
+
+// Around an island in the headland: out of the swath, down one side, along the
+// bottom and back up. Each side is a jog pinned at one end, and the offsets
+// that fit sit in a window about a metre wide -- narrower than the steps the
+// ladder takes, so it stepped over them and left the corners square.
+TEST(fields2cover_pp_pp, a_jog_pinned_at_one_end_lands_where_its_arcs_do) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMinTurningRadius(6.0);
+
+  // Crop with a bay cut into its top edge, and an island sitting in the bay.
+  // Both already grown by half the machine's width, so this is the ground the
+  // machine's centre may stand on.
+  const F2CCell crop {F2CLinearRing({
+      F2CPoint(58.0, 58.0), F2CPoint(102.0, 58.0), F2CPoint(102.0, 87.5),
+      F2CPoint(94.7, 87.5), F2CPoint(94.7, 64.1), F2CPoint(65.3, 64.1),
+      F2CPoint(65.3, 87.5), F2CPoint(58.0, 87.5), F2CPoint(58.0, 58.0)})};
+  const F2CCells island {box(71.3, 70.1, 88.7, 87.5)};
+  const F2CCells free_space = F2CCells(box(58.0, 58.0, 102.0, 93.5))
+      .difference(F2CCells(crop))
+      .difference(island);
+
+  // Out of the swath, down one side of the bay, along the bottom and back up.
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(68.05, 78.8));
+  mp.addPoint(F2CPoint(68.3, 67.1));
+  mp.addPoint(F2CPoint(91.7, 67.1));
+  mp.addPoint(F2CPoint(91.95, 78.8));
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  told.setSwathWidth(6.0);   // the ends stand on the crop, as swath ends do
+  const F2CPath path = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(63.8, 78.8), 0.0, mp, F2CPoint(96.2, 78.8), 0.0, told);
+
+  ASSERT_GT(path.size(), 1u);
+  EXPECT_EQ(path.countSharpTurns(), 0u);
+  // The island is not a swath's own ground, so nothing excuses driving it.
+  EXPECT_LT(lengthInside(path, island), 0.5);
 }
