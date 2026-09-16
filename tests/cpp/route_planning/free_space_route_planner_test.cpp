@@ -220,6 +220,50 @@ TEST(fields2cover_rp_free_space, turn_room_says_how_much_and_whether) {
   EXPECT_GT(wide, narrow + 0.5);            // half the radius asks for less room
 }
 
+TEST(fields2cover_rp_free_space, a_connection_leaves_a_swath_along_its_own_axis) {
+  // A swath ends on the border of the ground, as swath ends do: the machine is
+  // still on its own line there. The graph joined that end straight to whatever
+  // corner was nearest, so the first metres of the connection cut across the
+  // crop's edge at an angle no machine leaving the swath can hold.
+  const F2CCells crop = block(0.0, 0.0, 100.0, 100.0);
+  const F2CCells ground = block(-10.0, -10.0, 110.0, 110.0).difference(crop);
+
+  // Two swaths ending on the bottom edge, far apart, so the connection between
+  // them runs the length of the headland.
+  F2CSwaths sw;
+  sw.emplace_back(F2CLineString({F2CPoint(20, 40), F2CPoint(20, 0)}), 2.0);
+  sw.emplace_back(F2CLineString({F2CPoint(80, 0), F2CPoint(80, 40)}), 2.0);
+  F2CSwathsByCells swaths;
+  swaths.emplace_back(sw);
+
+  f2c::rp::FreeSpaceRoutePlanner planner;
+  planner.setClearance(6.0);
+  const F2CRoute route = planner.genRoute(ground, swaths, false, 1e-4);
+
+  // Whatever the connection does next, it has to leave the swath end going the
+  // way the swath goes: the first step is along that line, not across it.
+  size_t checked = 0;
+  for (const F2CMultiPoint& mp : route.getConnections()) {
+    if (mp.size() < 2) { continue; }
+    for (const size_t i : {size_t{0}, mp.size() - 1}) {
+      const F2CPoint end = mp.getGeometry(i);
+      if (end.distance(F2CPoint(20, 0)) > 1e-6 &&
+          end.distance(F2CPoint(80, 0)) > 1e-6) {
+        continue;             // not a swath end of ours
+      }
+      const F2CPoint next = mp.getGeometry(i == 0 ? 1 : mp.size() - 2);
+      // The swaths run along x = 20 and x = 80, so leaving along the axis means
+      // the step keeps that x.
+      EXPECT_NEAR(next.getX(), end.getX(), 0.5)
+          << "connection leaves the swath end at " << end.getX() << ", "
+          << end.getY() << " sideways, towards " << next.getX() << ", "
+          << next.getY();
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 0u);
+}
+
 TEST(fields2cover_rp_free_space, empty_ground_is_not_a_crash) {
   F2CCells ground;
   F2CSwathsByCells swaths;

@@ -199,11 +199,55 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
       (corner_tol_ > 0.0) ? cells.simplify(corner_tol_) : cells;
   ringCorners(outline, &nodes);
   const size_t n_corners = nodes.size();
+  // A swath end sits on the border of the ground, and the machine standing
+  // there is still on the swath's own line. Joined straight to whatever corner
+  // is nearest, the first metres of the connection cut across that line at an
+  // angle no machine leaving the swath can hold. Walk in along the swath's axis
+  // first and let the route start from there.
+  const double entry = this->getTurnRoom();
+  std::vector<std::pair<size_t, F2CPoint>> entries;   // swath end -> its entry
   for (auto&& swaths : swaths_by_cells) {
     for (auto&& s : swaths) {
-      nodes.push_back(s.startPoint());
-      nodes.push_back(s.endPoint());
+      const F2CPoint ends[2] = {s.startPoint(), s.endPoint()};
+      const double aways[2] = {s.getInAngle() + M_PI, s.getOutAngle()};
+      for (int e = 0; e < 2; ++e) {
+        nodes.push_back(ends[e]);
+        if (entry <= 0.0) {
+          continue;
+        }
+        // Along the axis until the ground holds it, then as far as the room
+        // asks for; the leg the turn planner is given starts there.
+        const double step = (sample_step_ > 0.0) ? sample_step_ : 0.5;
+        const double dx = std::cos(aways[e]), dy = std::sin(aways[e]);
+        const Area area(cells);
+        F2CPoint found = ends[e];
+        bool on = false;
+        for (double t = step; t <= 2.0 * entry + step; t += step) {
+          const F2CPoint q(ends[e].getX() + t * dx, ends[e].getY() + t * dy);
+          if (!area.holds(q.getX(), q.getY())) {
+            if (on) { break; }
+            continue;
+          }
+          found = q;
+          on = true;
+          if (t >= entry) { break; }
+        }
+        if (on && found.distance(ends[e]) > 1e-9) {
+          entries.push_back({nodes.size() - 1, found});
+        }
+      }
     }
+  }
+  const size_t n_before_entries = nodes.size();
+  for (const auto& e : entries) {
+    nodes.push_back(e.second);
+  }
+  // An end that has an entry leaves along it and nowhere else: a chord straight
+  // off the end is a sideways start no machine can hold. An end without one --
+  // no ground along its axis -- keeps its edges, so no swath is cut off.
+  std::vector<bool> leaves_by_entry(nodes.size(), false);
+  for (const auto& e : entries) {
+    leaves_by_entry[e.first] = true;
   }
   if (nodes.size() < 2) {
     n_components_ = nodes.size();
@@ -267,6 +311,9 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
     workers.emplace_back([&, t] {
       for (size_t i = t; i < nodes.size(); i += n_threads) {
         for (size_t k = i + 1; k < nodes.size(); ++k) {
+          if (leaves_by_entry[i] || leaves_by_entry[k]) {
+            continue;
+          }
           double band = 0.0;
           if (reaches(nodes[i], nodes[k], i >= n_corners, k >= n_corners,
                 &band)) {
@@ -288,6 +335,16 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
       g.addEdge(nodes[e.i], nodes[e.k], static_cast<int64_t>(1e3 * cost));
       pieces.join(e.i, e.k);
     }
+  }
+  // The step in from a swath end is the machine's own line, not a shortcut the
+  // graph has to justify -- and the end stands on the border, where a sampled
+  // segment is not held. Join the two unconditionally, or the entry is a node
+  // nothing reaches and the end keeps leaving sideways.
+  for (size_t e = 0; e < entries.size(); ++e) {
+    const size_t a = entries[e].first, b = n_before_entries + e;
+    const double len = nodes[a].distance(nodes[b]);
+    g.addEdge(nodes[a], nodes[b], static_cast<int64_t>(1e3 * len));
+    pieces.join(a, b);
   }
   n_components_ = pieces.count();
   return g;
@@ -469,8 +526,12 @@ Border borderOf(const std::vector<std::array<double, 4>>& edges,
   return w;
 }
 
+// `pinned_next`: the point next to each end is the step in along the swath's
+// own axis. It is where the machine actually leaves the swath, so it is as
+// fixed as the end itself -- aligning it to a border would put the start of
+// the connection back across the swath's line.
 F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
-    double margin, double step) {
+    double margin, double step, bool pinned_next) {
   const size_t n = mp.size();
   if (margin <= 0.0 || n < 3 || cells.isEmpty()) {
     return mp;
@@ -495,7 +556,10 @@ F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
     legs[i] = Line{p[i], (p[i + 1].getX() - p[i].getX()) / len,
                          (p[i + 1].getY() - p[i].getY()) / len};
     if (i == 0 || i + 2 == n) {
-      continue;
+      continue;                // reaches a swath end: its line cannot move
+    }
+    if (pinned_next && (i == 1 || i + 3 == n)) {
+      continue;                // reaches the step in from one, same thing
     }
     borders[i] = borderOf(edges, ground, p[i], p[i + 1]);
   }
@@ -550,6 +614,9 @@ F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
 
   std::vector<F2CPoint> out = p;
   for (size_t i = 1; i + 1 < n; ++i) {
+    if (pinned_next && (i == 1 || i + 2 == n)) {
+      continue;                // the step in from a swath end stays put
+    }
     F2CPoint x;
     if (meet(legs[i - 1], legs[i], &x)) {
       out[i] = x;
@@ -561,6 +628,9 @@ F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
   // border, since neither leg may move. Push the corner itself away from the
   // side the turn cuts towards, by what the arc cuts off there.
   for (size_t i = 1; i + 1 < n; ++i) {
+    if (pinned_next && (i == 1 || i + 2 == n)) {
+      continue;
+    }
     if (out[i].distance(p[i]) > 1e-9) {
       continue;
     }
@@ -625,8 +695,8 @@ F2CRoute FreeSpaceRoutePlanner::transformSolutionToRoute(
   }
   const double step = (this->sample_step_ > 0.0) ? this->sample_step_ : 0.5;
   for (size_t i = 0; i < route.sizeConnections(); ++i) {
-    route.getConnection(i) =
-        alignConnection(route.getConnection(i), this->ground_, room, step);
+    route.getConnection(i) = alignConnection(
+        route.getConnection(i), this->ground_, room, step, room > 0.0);
   }
   return route;
 }
