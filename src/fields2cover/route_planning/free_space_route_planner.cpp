@@ -325,6 +325,14 @@ double FreeSpaceRoutePlanner::getSampleStep() const {
   return this->sample_step_;
 }
 
+void FreeSpaceRoutePlanner::setTurnRoom(double room) {
+  this->turn_room_ = std::fabs(room);
+}
+
+double FreeSpaceRoutePlanner::getTurnRoom() const {
+  return (this->turn_room_ >= 0.0) ? this->turn_room_ : this->clearance_;
+}
+
 size_t FreeSpaceRoutePlanner::getComponentCount() const {
   return this->n_components_;
 }
@@ -611,14 +619,14 @@ F2CRoute FreeSpaceRoutePlanner::transformSolutionToRoute(
     F2CGraph2D& shortest_graph) const {
   F2CRoute route = RoutePlannerBase::transformSolutionToRoute(
       route_ids, swaths_by_cells, coverage_graph, shortest_graph);
-  if (this->clearance_ <= 0.0 || this->ground_.isEmpty()) {
+  const double room = this->getTurnRoom();
+  if (room <= 0.0 || this->ground_.isEmpty()) {
     return route;
   }
   const double step = (this->sample_step_ > 0.0) ? this->sample_step_ : 0.5;
   for (size_t i = 0; i < route.sizeConnections(); ++i) {
     route.getConnection(i) =
-        alignConnection(route.getConnection(i), this->ground_,
-            this->clearance_, step);
+        alignConnection(route.getConnection(i), this->ground_, room, step);
   }
   return route;
 }

@@ -176,6 +176,50 @@ TEST(fields2cover_rp_free_space, a_connection_leaves_room_for_its_turn_at_a_corn
   EXPECT_GT(checked, 0u);
 }
 
+TEST(fields2cover_rp_free_space, turn_room_says_how_much_and_whether) {
+  // The same corner, asked three ways: unset, the clearance answers for it;
+  // zero leaves the connection where the graph put it; and a value of its own
+  // is what the corner is held clear by.
+  const F2CCells crop = block(0.0, 0.0, 194.0, 194.0);
+  const F2CCells ground = block(0.0, 0.0, 200.0, 200.0).difference(crop);
+  F2CSwaths sw;
+  sw.emplace_back(F2CLineString({F2CPoint(197, 5), F2CPoint(197, 60)}), 2.0);
+  sw.emplace_back(F2CLineString({F2CPoint(60, 197), F2CPoint(5, 197)}), 2.0);
+  F2CSwathsByCells swaths;
+  swaths.emplace_back(sw);
+
+  auto cornerRoom = [&](bool set_room, double room) {
+    f2c::rp::FreeSpaceRoutePlanner planner;
+    planner.setClearance(6.0);
+    if (set_room) {
+      planner.setTurnRoom(room);
+    }
+    const F2CRoute route = planner.genRoute(ground, swaths, false, 1e-4);
+    double worst = 1e18;
+    for (const F2CMultiPoint& mp : route.getConnections()) {
+      for (size_t i = 1; i + 1 < mp.size(); ++i) {
+        worst = std::min(worst, mp.getGeometry(i).distance(crop));
+      }
+    }
+    return worst;
+  };
+
+  f2c::rp::FreeSpaceRoutePlanner unset;
+  unset.setClearance(6.0);
+  EXPECT_DOUBLE_EQ(unset.getTurnRoom(), 6.0);
+  f2c::rp::FreeSpaceRoutePlanner own;
+  own.setClearance(6.0);
+  own.setTurnRoom(3.0);
+  EXPECT_DOUBLE_EQ(own.getTurnRoom(), 3.0);
+
+  EXPECT_GE(cornerRoom(false, 0.0), 1.5);   // the clearance answers for it
+  EXPECT_LT(cornerRoom(true, 0.0), 0.05);   // turned off: the graph's own corner
+  const double wide = cornerRoom(true, 6.0);
+  const double narrow = cornerRoom(true, 3.0);
+  EXPECT_GT(narrow, 0.05);
+  EXPECT_GT(wide, narrow + 0.5);            // half the radius asks for less room
+}
+
 TEST(fields2cover_rp_free_space, empty_ground_is_not_a_crash) {
   F2CCells ground;
   F2CSwathsByCells swaths;

@@ -91,6 +91,20 @@ class FreeSpaceRoutePlanner : public RoutePlannerBase {
   /// up, not to route around it.
   size_t getComponentCount() const;
 
+  /// Room a connection's corners are given for the turn that follows them.
+  ///
+  /// The clearance above is a price on the graph; this is the geometry of the
+  /// turn, and the two are the same number only by habit. A corner is held
+  /// \a room (1 - cos(half the corner it turns)) clear of the border its turn
+  /// cuts towards -- the offset at which an arc of that radius passes the
+  /// corner instead of crossing it -- so the turning radius is what to pass.
+  /// @param room Zero leaves every connection where the graph put it. Left
+  ///        unset, the clearance answers for it.
+  void setTurnRoom(double room);
+
+  /// Room a connection's corners are given, the clearance where none is set.
+  double getTurnRoom() const;
+
   /// Build the route, and give each connection the room its turns need.
   ///
   /// A geodesic hugs whatever it goes around, so a connection runs through the
@@ -112,6 +126,7 @@ class FreeSpaceRoutePlanner : public RoutePlannerBase {
  private:
   /// Ground the last graph was built on, for the connections to be aligned to.
   mutable F2CCells ground_;
+  double turn_room_ {-1.0};      // below zero: the clearance answers for it
   double clearance_ {0.0};
   double clearance_cost_ {10.0};
   double corner_tol_ {0.0};
