@@ -215,22 +215,45 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
         if (entry <= 0.0) {
           continue;
         }
-        // Along the axis until the ground holds it, then as far as the room
-        // asks for; the leg the turn planner is given starts there.
+        // A swath end stands off the ground by half the strip its own swath
+        // covers: that is the band the ground was eroded by, and the machine
+        // crossing it is still on what it has just cut. An end further off
+        // than that is not standing at the edge of its swath -- it is inside
+        // ground the machine cannot enter, where the ground has pinched shut,
+        // and its axis finds ground again only on the far side of that.
+        // Standing exactly that far off is the defining case, not a borderline
+        // one, so the comparison is made to the tolerance the caller gave.
+        if (ends[e].distance(cells) >
+            0.5 * s.getWidth() + std::max(d_tol, 1e-9)) {
+          continue;
+        }
+        // Along the axis until the ground holds it, and then the room asks
+        // for on top of that: the end itself may stand outside the ground --
+        // half the machine's width from the crop is where a swath ends -- so
+        // the room has to be measured from where the ground starts, not from
+        // the end. The leg the turn planner is given starts at that point.
+        // How far away the ground may be is a separate limit from the room
+        // measured once it is found: a swath whose end stands deep inside the
+        // crop -- where the ground pinches shut -- has ground along its axis
+        // only on the far side of that crop, and an entry set there is only
+        // reached by driving through it.
         const double step = (sample_step_ > 0.0) ? sample_step_ : 0.5;
+        const double reach = 2.0 * entry;
         const double dx = std::cos(aways[e]), dy = std::sin(aways[e]);
         const Area area(cells);
         F2CPoint found = ends[e];
         bool on = false;
-        for (double t = step; t <= 2.0 * entry + step; t += step) {
+        double reached = 0.0;
+        for (double t = step; t <= reach + entry + step; t += step) {
           const F2CPoint q(ends[e].getX() + t * dx, ends[e].getY() + t * dy);
           if (!area.holds(q.getX(), q.getY())) {
-            if (on) { break; }
+            if (on || t > reach) { break; }
             continue;
           }
+          if (!on) { reached = t; }
           found = q;
           on = true;
-          if (t >= entry) { break; }
+          if (t - reached >= entry) { break; }
         }
         if (on && found.distance(ends[e]) > 1e-9) {
           entries.push_back({nodes.size() - 1, found});

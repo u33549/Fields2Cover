@@ -264,6 +264,49 @@ TEST(fields2cover_rp_free_space, a_connection_leaves_a_swath_along_its_own_axis)
   EXPECT_GT(checked, 0u);
 }
 
+TEST(fields2cover_rp_free_space, a_swath_end_buried_in_the_crop_gets_no_entry) {
+  // The entry set along a swath's axis crosses the band the ground was eroded
+  // by, which the swath itself covers -- half a machine width, and the machine
+  // there is still on what it has just cut. A swath that stops short of the
+  // border leaves its end buried in the crop instead, and then its axis finds
+  // ground again only on the far side. The entry is joined to the end
+  // unconditionally, so the graph gains an edge driving through the crop.
+  const F2CCells crop = block(0.0, 0.0, 100.0, 100.0);
+  const F2CCells ground = block(-10.0, -10.0, 110.0, 110.0).difference(crop);
+
+  F2CSwaths sw;
+  // Reaches the border, as a swath does.
+  sw.emplace_back(F2CLineString({F2CPoint(50, 100), F2CPoint(50, 0)}), 2.0);
+  // Stops 10 m short of it: ground lies 10 m further along the same axis.
+  sw.emplace_back(F2CLineString({F2CPoint(20, 100), F2CPoint(20, 10)}), 2.0);
+  F2CSwathsByCells swaths;
+  swaths.emplace_back(sw);
+
+  f2c::rp::FreeSpaceRoutePlanner planner;
+  planner.setClearance(6.0);
+  planner.setSampleStep(0.25);
+  const F2CGraph2D g = planner.createShortestGraph(ground, swaths, 1e-4);
+
+  size_t checked = 0;
+  for (const auto& from : g.getEdges()) {
+    for (const auto& e : from.second) {
+      const F2CPoint a = g.indexToNode(from.first);
+      const F2CPoint b = g.indexToNode(e.first);
+      for (int k = 1; k < 8; ++k) {
+        const double u = k / 8.0;
+        const F2CPoint m(a.getX() + (b.getX() - a.getX()) * u,
+                         a.getY() + (b.getY() - a.getY()) * u);
+        EXPECT_FALSE(crop.isPointIn(m))
+            << "edge from " << a.getX() << ", " << a.getY() << " to "
+            << b.getX() << ", " << b.getY() << " drives through the crop at "
+            << m.getX() << ", " << m.getY();
+      }
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 0u);
+}
+
 TEST(fields2cover_rp_free_space, empty_ground_is_not_a_crash) {
   F2CCells ground;
   F2CSwathsByCells swaths;
