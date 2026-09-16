@@ -34,6 +34,12 @@ double pathLength(const std::vector<F2CPoint>& p) {
   return len;
 }
 
+F2CCells block(double x0, double y0, double x1, double y1) {
+  return F2CCells(F2CCell(F2CLinearRing({
+      F2CPoint(x0, y0), F2CPoint(x1, y0), F2CPoint(x1, y1),
+      F2CPoint(x0, y1), F2CPoint(x0, y0)})));
+}
+
 }  // namespace
 
 TEST(fields2cover_rp_free_space, every_edge_stays_on_the_ground) {
@@ -134,6 +140,40 @@ TEST(fields2cover_rp_free_space, clearance_is_priced_not_forbidden) {
   EXPECT_EQ(kept_clear.getComponentCount(), 1u);
   EXPECT_DOUBLE_EQ(kept_clear.getClearance(), 3.0);
   EXPECT_DOUBLE_EQ(kept_clear.getClearanceCost(), 10.0);
+}
+
+TEST(fields2cover_rp_free_space, a_connection_leaves_room_for_its_turn_at_a_corner) {
+  // The ground is an L 6 m wide around the corner of the crop, with a swath in
+  // each arm, both far enough along it that the connection between them runs
+  // nearly parallel to the borders and turns a right angle at the corner. A
+  // geodesic hugs whatever it goes around, so that connection runs through the
+  // corner itself -- and a turn of any radius has to cut into the crop to
+  // follow it. A quarter turn of radius 6 asks for 6 (1 - cos 45) = 1.76 m.
+  const F2CCells crop = block(0.0, 0.0, 194.0, 194.0);
+  const F2CCells ground = block(0.0, 0.0, 200.0, 200.0).difference(crop);
+
+  F2CSwaths sw;
+  sw.emplace_back(F2CLineString({F2CPoint(197, 5), F2CPoint(197, 60)}), 2.0);
+  sw.emplace_back(F2CLineString({F2CPoint(60, 197), F2CPoint(5, 197)}), 2.0);
+  F2CSwathsByCells swaths;
+  swaths.emplace_back(sw);
+
+  f2c::rp::FreeSpaceRoutePlanner planner;
+  planner.setClearance(6.0);   // the room a turn of that radius needs
+  const F2CRoute route = planner.genRoute(ground, swaths, false, 1e-4);
+
+  ASSERT_GT(route.sizeConnections(), 0u);
+  size_t checked = 0;
+  for (const F2CMultiPoint& mp : route.getConnections()) {
+    for (size_t i = 0; i < mp.size(); ++i) {
+      const F2CPoint p = mp.getGeometry(i);
+      EXPECT_GE(p.distance(crop), 1.5)
+          << "connection point " << p.getX() << ", " << p.getY()
+          << " hugs the crop, leaving its turn nothing to cut";
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 0u);
 }
 
 TEST(fields2cover_rp_free_space, empty_ground_is_not_a_crash) {

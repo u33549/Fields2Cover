@@ -176,6 +176,7 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
     const F2CCells& cells, const F2CSwathsByCells& swaths_by_cells,
     double d_tol) const {
   F2CGraph2D g;
+  this->ground_ = cells;   // what the connections built on this graph align to
   if (cells.size() == 0) {
     n_components_ = 0;
     return g;
@@ -326,6 +327,300 @@ double FreeSpaceRoutePlanner::getSampleStep() const {
 
 size_t FreeSpaceRoutePlanner::getComponentCount() const {
   return this->n_components_;
+}
+
+namespace {
+
+// A leg, as the line it runs on.
+struct Line {
+  F2CPoint p;
+  double ux, uy;
+};
+
+bool meet(const Line& a, const Line& b, F2CPoint* out) {
+  const double c = a.ux * b.uy - a.uy * b.ux;
+  if (std::fabs(c) < 1e-3) {
+    return false;              // parallel
+  }
+  const double dx = b.p.getX() - a.p.getX(), dy = b.p.getY() - a.p.getY();
+  const double t = (dx * b.uy - dy * b.ux) / c;
+  *out = F2CPoint(a.p.getX() + t * a.ux, a.p.getY() + t * a.uy);
+  return true;
+}
+
+// How far the ground reaches from a point on its border, along `n`.
+double roomFrom(const Area& ground, const F2CPoint& foot, double nx, double ny,
+    double reach) {
+  auto in = [&](double t) {
+    return ground.holds(foot.getX() + t * nx, foot.getY() + t * ny);
+  };
+  double inside = 0.05, outside = -1.0;
+  for (double t = 0.05; t < reach; t += 0.25) {
+    if (!in(t)) {
+      outside = t;
+      break;
+    }
+    inside = t;
+  }
+  if (outside < 0.0) {
+    return inside;
+  }
+  for (int k = 0; k < 14; ++k) {
+    const double m = 0.5 * (inside + outside);
+    (in(m) ? inside : outside) = m;
+  }
+  return inside;
+}
+
+bool onGround(const Area& ground, const F2CPoint& a, const F2CPoint& b,
+    double step) {
+  const double len = a.distance(b);
+  if (len < 1e-9) {
+    return true;
+  }
+  const int n = std::max(2, static_cast<int>(std::ceil(len / step)));
+  for (int t = 0; t < n; ++t) {
+    const double u = (t + 0.5) / n;
+    if (!ground.holds(a.getX() + (b.getX() - a.getX()) * u,
+                      a.getY() + (b.getY() - a.getY()) * u)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The border a leg runs along: nearly parallel, nearest, and facing it.
+struct Border {
+  bool found {false};
+  F2CPoint foot;
+  double ux {0}, uy {0};     // along the border, pointing the way the leg goes
+  double nx {0}, ny {0};     // into the ground
+  double room {0}, at {0};   // ground left across it, and where the leg is now
+};
+
+Border borderOf(const std::vector<std::array<double, 4>>& edges,
+    const Area& ground, const F2CPoint& a, const F2CPoint& b) {
+  Border w;
+  const double len = a.distance(b);
+  if (len < 1e-9) {
+    return w;
+  }
+  const double ux = (b.getX() - a.getX()) / len, uy = (b.getY() - a.getY()) / len;
+  const F2CPoint mid(0.5 * (a.getX() + b.getX()), 0.5 * (a.getY() + b.getY()));
+  const double parallel = std::sin(10.0 * M_PI / 180.0);
+  double best = 1e18;
+  size_t pick = edges.size();
+  for (size_t e = 0; e < edges.size(); ++e) {
+    const double ex = edges[e][2] - edges[e][0], ey = edges[e][3] - edges[e][1];
+    const double el = std::hypot(ex, ey);
+    if (el < 1e-6) {
+      continue;
+    }
+    const double dx = ex / el, dy = ey / el;
+    if (std::fabs(ux * dy - uy * dx) > parallel) {
+      continue;
+    }
+    const double along =
+        (mid.getX() - edges[e][0]) * dx + (mid.getY() - edges[e][1]) * dy;
+    if (along < -1.0 || along > el + 1.0) {
+      continue;
+    }
+    const double off = std::fabs(
+        (mid.getX() - edges[e][0]) * dy - (mid.getY() - edges[e][1]) * dx);
+    if (off < best) {
+      best = off;
+      pick = e;
+    }
+  }
+  if (pick == edges.size()) {
+    return w;
+  }
+  const double ex = edges[pick][2] - edges[pick][0];
+  const double ey = edges[pick][3] - edges[pick][1];
+  const double el = std::hypot(ex, ey);
+  double dx = ex / el, dy = ey / el;
+  if (dx * ux + dy * uy < 0.0) {
+    dx = -dx; dy = -dy;
+  }
+  const double along =
+      (mid.getX() - edges[pick][0]) * dx + (mid.getY() - edges[pick][1]) * dy;
+  const F2CPoint foot(edges[pick][0] + along * dx, edges[pick][1] + along * dy);
+  double nx = -dy, ny = dx;
+  if (!ground.holds(foot.getX() + 0.05 * nx, foot.getY() + 0.05 * ny)) {
+    nx = -nx; ny = -ny;
+    if (!ground.holds(foot.getX() + 0.05 * nx, foot.getY() + 0.05 * ny)) {
+      return w;
+    }
+  }
+  w.found = true;
+  w.foot = foot;
+  w.ux = dx; w.uy = dy;
+  w.nx = nx; w.ny = ny;
+  w.at = best;
+  w.room = roomFrom(ground, foot, nx, ny, 4.0 * best + 200.0);
+  return w;
+}
+
+F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
+    double margin, double step) {
+  const size_t n = mp.size();
+  if (margin <= 0.0 || n < 3 || cells.isEmpty()) {
+    return mp;
+  }
+  std::vector<F2CPoint> p;
+  for (size_t i = 0; i < n; ++i) {
+    p.push_back(mp.getGeometry(i));
+  }
+  const Area ground(cells);
+  std::vector<std::array<double, 4>> edges;
+  ground.edges(&edges);
+
+  // The ends are swath ends and stay put, so the legs that reach them keep
+  // their line; only what runs between borders is laid along one.
+  std::vector<Line> legs(n - 1);
+  std::vector<Border> borders(n - 1);
+  for (size_t i = 0; i + 1 < n; ++i) {
+    const double len = p[i].distance(p[i + 1]);
+    if (len < 1e-9) {
+      return mp;
+    }
+    legs[i] = Line{p[i], (p[i + 1].getX() - p[i].getX()) / len,
+                         (p[i + 1].getY() - p[i].getY()) / len};
+    if (i == 0 || i + 2 == n) {
+      continue;
+    }
+    borders[i] = borderOf(edges, ground, p[i], p[i + 1]);
+  }
+
+  // What each corner asks for, measured on the legs as they will run.
+  auto heading = [&](size_t i) {
+    return borders[i].found ? std::atan2(borders[i].uy, borders[i].ux)
+                            : std::atan2(legs[i].uy, legs[i].ux);
+  };
+  auto asks = [&](size_t i) {
+    if (i == 0 || i + 1 >= n) {
+      return 0.0;
+    }
+    const double turn = F2CPoint::getAngleDiffAbs(heading(i - 1), heading(i));
+    return margin * (1.0 - std::cos(0.5 * turn));
+  };
+  // Whether a leg's border is the one its corner turns towards: the arc only
+  // cuts the inside of the turn, so that is the side to keep away from.
+  auto inside = [&](size_t leg, size_t corner) {
+    if (corner == 0 || corner + 1 >= n) {
+      return false;
+    }
+    const F2CPoint a = p[corner - 1] - p[corner], b = p[corner + 1] - p[corner];
+    const double la = std::hypot(a.getX(), a.getY());
+    const double lb = std::hypot(b.getX(), b.getY());
+    if (la < 1e-9 || lb < 1e-9) {
+      return false;
+    }
+    const double bx = a.getX() / la + b.getX() / lb;
+    const double by = a.getY() / la + b.getY() / lb;
+    return bx * -borders[leg].nx + by * -borders[leg].ny > 0.0;
+  };
+
+  for (size_t i = 0; i + 1 < n; ++i) {
+    const Border& w = borders[i];
+    if (!w.found) {
+      continue;
+    }
+    double want = 0.0;
+    if (inside(i, i)) {
+      want = std::max(want, asks(i));
+    }
+    if (inside(i, i + 1)) {
+      want = std::max(want, asks(i + 1));
+    }
+    // Never towards the border: the leg is only laid parallel to it, and moved
+    // out when what it carries needs more room than it has.
+    const double off = std::min(std::max(w.at, want), w.room);
+    legs[i] = Line{F2CPoint(w.foot.getX() + off * w.nx, w.foot.getY() + off * w.ny),
+                   w.ux, w.uy};
+  }
+
+  std::vector<F2CPoint> out = p;
+  for (size_t i = 1; i + 1 < n; ++i) {
+    F2CPoint x;
+    if (meet(legs[i - 1], legs[i], &x)) {
+      out[i] = x;
+    }
+  }
+
+  // A corner both of whose legs reach a swath end -- a connection that is one
+  // corner, the common case -- cannot be given room by laying a leg along a
+  // border, since neither leg may move. Push the corner itself away from the
+  // side the turn cuts towards, by what the arc cuts off there.
+  for (size_t i = 1; i + 1 < n; ++i) {
+    if (out[i].distance(p[i]) > 1e-9) {
+      continue;
+    }
+    const double turn = F2CPoint::getAngleDiffAbs(heading(i - 1), heading(i));
+    const double half = std::cos(0.5 * turn);
+    if (turn < 0.05 || half < 1.0 / 3.0) {
+      continue;                // straight, or too sharp to round at all
+    }
+    const F2CPoint a = p[i - 1] - p[i], b = p[i + 1] - p[i];
+    const double la = std::hypot(a.getX(), a.getY());
+    const double lb = std::hypot(b.getX(), b.getY());
+    if (la < 1e-9 || lb < 1e-9) {
+      continue;
+    }
+    const double bx = a.getX() / la + b.getX() / lb;
+    const double by = a.getY() / la + b.getY() / lb;
+    const double bl = std::hypot(bx, by);
+    if (bl < 1e-6) {
+      continue;
+    }
+    const double want = margin * (1.0 / half - 1.0);
+    for (const double s : {1.0, 0.75, 0.5, 0.25}) {
+      const F2CPoint c(p[i].getX() - s * want * bx / bl,
+                       p[i].getY() - s * want * by / bl);
+      if (ground.holds(c.getX(), c.getY()) &&
+          onGround(ground, out[i - 1], c, step) &&
+          onGround(ground, c, out[i + 1], step)) {
+        out[i] = c;
+        break;
+      }
+    }
+  }
+  for (size_t i = 1; i + 1 < n; ++i) {
+    if (out[i].distance(p[i]) > 4.0 * margin || !ground.holds(out[i].getX(), out[i].getY())) {
+      return mp;
+    }
+  }
+  for (size_t i = 0; i + 1 < n; ++i) {
+    if (!onGround(ground, out[i], out[i + 1], step)) {
+      return mp;
+    }
+  }
+  F2CMultiPoint res;
+  for (const auto& q : out) {
+    res.addPoint(q);
+  }
+  return res;
+}
+
+}  // namespace
+
+F2CRoute FreeSpaceRoutePlanner::transformSolutionToRoute(
+    const std::vector<long long int>& route_ids,
+    const F2CSwathsByCells& swaths_by_cells,
+    const F2CGraph2D& coverage_graph,
+    F2CGraph2D& shortest_graph) const {
+  F2CRoute route = RoutePlannerBase::transformSolutionToRoute(
+      route_ids, swaths_by_cells, coverage_graph, shortest_graph);
+  if (this->clearance_ <= 0.0 || this->ground_.isEmpty()) {
+    return route;
+  }
+  const double step = (this->sample_step_ > 0.0) ? this->sample_step_ : 0.5;
+  for (size_t i = 0; i < route.sizeConnections(); ++i) {
+    route.getConnection(i) =
+        alignConnection(route.getConnection(i), this->ground_,
+            this->clearance_, step);
+  }
+  return route;
 }
 
 }  // namespace f2c::rp

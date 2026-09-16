@@ -91,9 +91,27 @@ class FreeSpaceRoutePlanner : public RoutePlannerBase {
   /// up, not to route around it.
   size_t getComponentCount() const;
 
+  /// Build the route, and give each connection the room its turns need.
+  ///
+  /// A geodesic hugs whatever it goes around, so a connection runs through the
+  /// corner of the ground it turns at and a turn of any radius has to cut into
+  /// the crop to follow it. Each leg that runs along a border is laid parallel
+  /// to it instead, and held \a clearance (1 - cos(half the corner it turns))
+  /// away from the border the turn cuts towards -- the offset at which an arc
+  /// of that radius passes the corner instead of crossing it. A leg already
+  /// further out is left where it is, and a connection whose aligned legs would
+  /// leave the ground is kept as it was. With no clearance set, nothing moves.
+  F2CRoute transformSolutionToRoute(
+      const std::vector<long long int>& route_ids,
+      const F2CSwathsByCells& swaths_by_cells,
+      const F2CGraph2D& coverage_graph,
+      F2CGraph2D& shortest_graph) const override;
+
   virtual ~FreeSpaceRoutePlanner() = default;
 
  private:
+  /// Ground the last graph was built on, for the connections to be aligned to.
+  mutable F2CCells ground_;
   double clearance_ {0.0};
   double clearance_cost_ {10.0};
   double corner_tol_ {0.0};
