@@ -437,6 +437,27 @@ F2CPath PathPlanning::planPathForConnection(const F2CRobot& robot,
     return {};
   }
 
+  // The hop limit above keeps a long reversal off the direct turn, and a span
+  // over the whole track is refused as a detour -- so where the one turn between
+  // the ends is the only one that fits, nothing ever asked for it. Where free
+  // space says it fits, and it turns no more than the track does, it is the
+  // track's best rounding.
+  if (!turn.getFreeSpace().isEmpty()) {
+    TurnReport rep;
+    F2CPath whole = turn.createTurn(robot, p1, ang1, p2, ang2, &rep);
+    double turned = 0.0;
+    for (size_t k = 1; k < whole.size(); ++k) {
+      turned += F2CPoint::getAngleDiffAbs(whole[k].angle, whole[k - 1].angle);
+    }
+    double total = 0.0;
+    for (const double s : cornerSweeps(poly, ang1, ang2)) {
+      total += s;
+    }
+    if (whole.size() > 1 && rep.inside && turned <= total + robot.getTurnSlack()) {
+      return whole;
+    }
+  }
+
   F2CPath path;
   appendRoundedTrack(path, poly, robot, turn, robot.getMaxCornerCut(),
       turn.hasContinuousCurvature(), ang1, ang2);
