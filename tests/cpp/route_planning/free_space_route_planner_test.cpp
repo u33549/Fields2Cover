@@ -307,6 +307,53 @@ TEST(fields2cover_rp_free_space, a_swath_end_buried_in_the_crop_gets_no_entry) {
   EXPECT_GT(checked, 0u);
 }
 
+TEST(fields2cover_rp_free_space, a_connection_is_aligned_though_its_ends_are_off_the_ground) {
+  // In the field the ground is eroded away from the crop by half a machine
+  // width, so a swath ends outside it: on the crop's border, with the ground
+  // starting a metre further along the swath's own axis. The corner between
+  // two such swaths is the ground's own inner corner, which a turn cannot
+  // round without cutting the crop, so the alignment has to move it -- and it
+  // used to compute that move and then throw it away, because it sampled the
+  // leg reaching the swath end and of course found it off the ground.
+  const F2CCells crop = block(0.0, 0.0, 194.0, 194.0);
+  const F2CCells ground =
+      block(0.0, 0.0, 220.0, 220.0).difference(block(0.0, 0.0, 195.0, 195.0));
+
+  F2CSwaths sw;
+  sw.emplace_back(F2CLineString({F2CPoint(5, 100), F2CPoint(194, 100)}), 2.0);
+  sw.emplace_back(F2CLineString({F2CPoint(100, 194), F2CPoint(100, 5)}), 2.0);
+  F2CSwathsByCells swaths;
+  swaths.emplace_back(sw);
+
+  f2c::rp::FreeSpaceRoutePlanner planner;
+  planner.setClearance(6.0);
+  planner.setClearanceCost(0.0);   // the geodesic, so the corner is the ground's
+  planner.setCornerTolerance(0.0);
+  planner.setSampleStep(0.25);
+  const F2CRoute route = planner.genRoute(ground, swaths, false, 1e-4);
+
+  size_t checked = 0;
+  for (const F2CMultiPoint& mp : route.getConnections()) {
+    if (mp.size() != 5) {
+      continue;                  // swath end, step in, corner, step in, end
+    }
+    // Both ends are swath ends, on the crop's border, and stay there.
+    EXPECT_NEAR(mp.getGeometry(0).distance(crop), 0.0, 1e-6);
+    EXPECT_NEAR(mp.getGeometry(4).distance(crop), 0.0, 1e-6);
+    // The ground's inner corner stands 1.41 m from the crop; a quarter turn of
+    // radius 6 asks for 6 (1/cos 41 - 1) = 2.0 m more along the bisector,
+    // which puts the corner 3.41 m out. Left unaligned it sits at 1.41.
+    const F2CPoint corner = mp.getGeometry(2);
+    EXPECT_GT(corner.distance(crop), 2.5)
+        << "corner left at " << corner.getX() << ", " << corner.getY()
+        << ": the alignment was computed and then thrown away";
+    EXPECT_LT(corner.distance(F2CPoint(195.0, 195.0)), 3.0)
+        << "corner moved further than the turn asked for";
+    ++checked;
+  }
+  EXPECT_GT(checked, 0u);
+}
+
 TEST(fields2cover_rp_free_space, empty_ground_is_not_a_crash) {
   F2CCells ground;
   F2CSwathsByCells swaths;

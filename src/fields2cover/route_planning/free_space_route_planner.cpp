@@ -691,7 +691,12 @@ F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
       return mp;
     }
   }
-  for (size_t i = 0; i + 1 < n; ++i) {
+  // Not the two legs that reach an end. An end is a swath end, standing off
+  // the ground by half the strip its own swath covers, so a sampled leg that
+  // reaches one always finds a point outside -- which is why the graph joins
+  // an end to its entry unconditionally instead of testing it. Testing it here
+  // threw the alignment away on every connection a swath end is part of.
+  for (size_t i = 1; i + 2 < n; ++i) {
     if (!onGround(ground, out[i], out[i + 1], step)) {
       return mp;
     }
