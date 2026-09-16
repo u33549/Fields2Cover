@@ -532,3 +532,42 @@ TEST(fields2cover_pp_pp, a_long_reversal_takes_the_u_turn_that_fits) {
   // Half a circle of radius 6 and the 12 m between its ends.
   EXPECT_NEAR(path.length(), M_PI * 6.0 + 12.0, 0.5);
 }
+
+// Around an island in the headland: out of the swath, down one side, along the
+// bottom and back up. Each side is a jog pinned at one end, and the offsets
+// that fit sit in a window about a metre wide -- narrower than the steps the
+// ladder takes, so it stepped over them and left the corners square.
+TEST(fields2cover_pp_pp, a_jog_pinned_at_one_end_lands_where_its_arcs_do) {
+  F2CRobot robot(3.0, 6.0);
+  robot.setCruiseVel(2.0);
+  robot.setMinTurningRadius(6.0);
+
+  // Crop with a bay cut into its top edge, and an island sitting in the bay.
+  // Both already grown by half the machine's width, so this is the ground the
+  // machine's centre may stand on.
+  const F2CCell crop {F2CLinearRing({
+      F2CPoint(58.0, 58.0), F2CPoint(102.0, 58.0), F2CPoint(102.0, 87.5),
+      F2CPoint(94.7, 87.5), F2CPoint(94.7, 64.1), F2CPoint(65.3, 64.1),
+      F2CPoint(65.3, 87.5), F2CPoint(58.0, 87.5), F2CPoint(58.0, 58.0)})};
+  const F2CCells island {box(71.3, 70.1, 88.7, 87.5)};
+  const F2CCells free_space = F2CCells(box(58.0, 58.0, 102.0, 93.5))
+      .difference(F2CCells(crop))
+      .difference(island);
+
+  // Out of the swath, down one side of the bay, along the bottom and back up.
+  F2CMultiPoint mp;
+  mp.addPoint(F2CPoint(68.05, 78.8));
+  mp.addPoint(F2CPoint(68.3, 67.1));
+  mp.addPoint(F2CPoint(91.7, 67.1));
+  mp.addPoint(F2CPoint(91.95, 78.8));
+  f2c::pp::DubinsCurves told;
+  told.setFreeSpace(free_space);
+  told.setSwathWidth(6.0);   // the ends stand on the crop, as swath ends do
+  const F2CPath path = f2c::pp::PathPlanning::planPathForConnection(
+      robot, F2CPoint(63.8, 78.8), 0.0, mp, F2CPoint(96.2, 78.8), 0.0, told);
+
+  ASSERT_GT(path.size(), 1u);
+  EXPECT_EQ(path.countSharpTurns(), 0u);
+  // The island is not a swath's own ground, so nothing excuses driving it.
+  EXPECT_LT(lengthInside(path, island), 0.5);
+}
