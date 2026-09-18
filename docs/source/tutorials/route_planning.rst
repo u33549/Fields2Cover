@@ -262,3 +262,70 @@ custom order of the swaths for the path planning process.
     - The custom order may not contain any elements more than once
     - The supplied list/vector length must be the same as the number of the swaths
     - The order vector may contain only elements from the swath range: `<0, swaths.size() - 1>`
+
+
+Any mode behind one call
+------------------------
+
+The metaheuristic planner and the known patterns both implement
+``f2c::rp::RouteGeneratorBase``, whose only function is
+``genRoute(cells, swaths_by_cells, d_tol)``.
+Code that lets the user choose the mode therefore does not have to branch on it:
+
+.. tabs:: lang
+
+  .. code-tab:: cpp
+    :caption: C++
+
+    std::unique_ptr<f2c::rp::RouteGeneratorBase> planner;
+    if (use_pattern) {
+      planner = std::make_unique<f2c::rp::SnakeOrder>();
+    } else {
+      planner = std::make_unique<f2c::rp::RoutePlannerBase>();
+    }
+    F2CRoute route = planner->genRoute(mid_hl, swaths);
+
+  .. code-tab:: python
+    :caption: Python
+
+    planner = f2c.RP_Snake() if use_pattern else f2c.RP_RoutePlannerBase();
+    route = planner.genRoute(mid_hl, swaths);
+
+``RoutePlannerBase`` keeps its longer ``genRoute`` overload, which is still the way
+to reach the optimizer settings such as the time limit or ``redirect_swaths``.
+
+
+Fields split into cells
+-----------------------
+
+When the field has been decomposed, ``genRoute`` receives one group of swaths per
+cell. The order those groups arrive in is whatever the decomposition produced and
+says nothing about where the cells lie, so the route does not follow it: it picks
+the next cell by what that cell costs to reach, and drives a cell in reverse when
+its far end is the nearer one.
+
+The cost is the distance through the headland graph -- a cell on the other side of
+a wall is far to drive to even when it looks near -- plus the turn needed to leave
+one cell and line up on the next. A field with a single cell has no order to choose
+and is unaffected.
+
+The machine rarely stands at the first cell. ``setStartAndEndPoint`` says where it
+is, and the route then starts at the cell nearest that point and returns to it:
+
+.. tabs:: lang
+
+  .. code-tab:: cpp
+    :caption: C++
+
+    f2c::rp::BoustrophedonOrder order;
+    order.setStartAndEndPoint(F2CPoint(98, 25));
+    F2CRoute route = order.genRoute(mid_hl, swaths_by_cells);
+
+  .. code-tab:: python
+    :caption: Python
+
+    order = f2c.RP_Boustrophedon();
+    order.setStartAndEndPoint(f2c.Point(98, 25));
+    route = order.genRoute(mid_hl, swaths_by_cells);
+
+The same point is used for both ends, as in ``RoutePlannerBase::setStartAndEndPoint``.

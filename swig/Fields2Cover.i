@@ -172,6 +172,11 @@ typedef long unsigned int size_t;
 %template(VectorCells) std::vector<f2c::types::Cells>;
 %template(Strips) std::vector<f2c::types::Strip>;
 %template(PathStates) std::vector<f2c::types::PathState>;
+%template(VectorPath) std::vector<F2CPath>;
+// concaveCorners answers with a corner and the angle that points into the
+// region; without these the pair comes back as an opaque handle.
+%template(PointAngle) std::pair<F2CPoint, double>;
+%template(VectorPointAngle) std::vector<std::pair<F2CPoint, double>>;
 %template(Fields) std::vector<f2c::types::Field>;
 %template(VectorPathDirection) std::vector<f2c::types::PathDirection>;
 %template(VectorPathSectionType) std::vector<f2c::types::PathSectionType>;
@@ -310,6 +315,8 @@ DEFINE_PP_COSTS(BaseObjective<f2c::obj::PPObjective>, computeCostWithMinimizingS
 %include "fields2cover/decomposition/boustrophedon_decomp.h"
 
 
+%rename(RP_Route_generator_base_class) f2c::rp::RouteGeneratorBase;
+%include "fields2cover/route_planning/route_generator_base.h"
 %rename(RP_Single_cell_order_base_class) f2c::rp::SingleCellSwathsOrderBase;
 %include "fields2cover/route_planning/single_cell_swaths_order_base.h"
 %rename(RP_Boustrophedon) f2c::rp::BoustrophedonOrder;

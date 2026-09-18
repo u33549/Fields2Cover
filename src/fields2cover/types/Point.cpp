@@ -4,6 +4,7 @@
 //                        BSD-3 License
 //=============================================================================
 
+#include <memory>
 #include "fields2cover/types/Point.h"
 
 namespace f2c::types {
@@ -17,7 +18,17 @@ Point::Point(double _x, double _y, double _z) : Geometry() {
 }
 
 Point::Point(const Point& p) : Geometry(p.clone()) {}
-Point::Point(Point&& p) = default;
+Point::Point(Point&& p)
+    : Geometry<OGRPoint, wkbPoint>(std::move(p)) {
+  // Assigning to a Point writes through data_ rather than replacing it, so a
+  // moved-from Point has to keep a buffer of its own. Leaving it null makes the
+  // next assignment to it dereference nothing -- which is what std::swap does
+  // on its way through std::reverse or std::sort, so those crashed on any
+  // vector<Point>.
+  p.data_ = std::shared_ptr<OGRPoint>(
+      static_cast<OGRPoint*>(OGRGeometryFactory::createGeometry(wkbPoint)),
+      [](OGRPoint* g) {OGRGeometryFactory::destroyGeometry(g);});
+}
 Point::~Point() = default;
 
 Point& Point::operator=(Point&& p) {
@@ -164,8 +175,13 @@ double Point::signedDistance2Segment(
 Point Point::intersectionOfLines(
     const Point& l1_s, const Point& l1_e,
     const Point& l2_s, const Point& l2_e) {
-  double den = det(l1_e - l1_s, l2_e - l2_s);
-  if (den == 0) {
+  const Point v1 = l1_e - l1_s;
+  const Point v2 = l2_e - l2_s;
+  double den = det(v1, v2);
+  // Near-parallel lines have den near but not at 0, and dividing by it
+  // sends the result arbitrarily far off. Scale the tolerance by the
+  // lines' length so it holds at any scale.
+  if (fabs(den) <= 1e-9 * sqrt((v1 * v1) * (v2 * v2))) {
     return l1_s;
   }
   double det1 = det(l1_e, l1_s);
