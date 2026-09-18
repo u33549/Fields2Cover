@@ -11,6 +11,9 @@
 #include <vector>
 #include "fields2cover/types.h"
 #include "fields2cover/headland_generator/headland_generator_base.h"
+#include "fields2cover/path_planning/turning_base.h"
+#include "fields2cover/swath_generator/swath_generator_base.h"
+#include "fields2cover/objectives/sg_obj/sg_objective.h"
 
 namespace f2c::hg {
 
@@ -82,6 +85,102 @@ class CorridorHL : public HeadlandGeneratorBase {
   /// Rule generateHeadlands() currently uses to split the corridor.
   CorridorShareMode getShareMode() const;
 
+  /// Open a corridor as wide as the turn the planner actually makes.
+  ///
+  /// The corridor is where a turn at the end of a swath is driven, so it has
+  /// to be as deep as that turn reaches. Twice the turning radius is only a
+  /// bound: with the swaths far enough apart the turn reaches one radius out,
+  /// and with them closer together than twice the radius it has to loop and
+  /// reaches further than the bound allows for.
+  ///
+  /// A piece left narrower than the robot's coverage width is given to the
+  /// corridor instead of returned: nothing can cover it without the implement
+  /// hanging over the corridor anyway.
+  /// @param field Cells that share borders, usually from a decomposition.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @return Mainland area
+  F2CCells generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn);
+
+  /// How far a turn between two neighbouring swaths reaches past their ends.
+  ///
+  /// This is what a border the swaths end on has to leave room for. It is not
+  /// twice the turning radius: with room to spare the turn only reaches one
+  /// radius out, and with the swaths closer together than that the turn has to
+  /// loop and reaches further than two. A turn that backs up instead of
+  /// driving round reaches no distance at all.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @return Distance the turn reaches past the end of the swaths
+  double turnExtent(const F2CRobot& robot, f2c::pp::TurningBase& turn) const;
+
+  /// How far a turn reaches past swaths that meet the border at an angle.
+  ///
+  /// Swaths not square to a border cross it covWidth / sin(angle) apart, so
+  /// the turn between them is a different one. pi/2 is the square case, which
+  /// is what turnExtent(robot, turn) asks.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @param track_border_angle Angle between the swath track and the border.
+  /// @return Distance the turn reaches past the end of the swaths
+  double turnExtent(const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    double track_border_angle) const;
+
+  /// Open a corridor whose depth follows how each cell's swaths meet the
+  /// border, instead of one depth for the whole field.
+  ///
+  /// turnExtent() answers the worst case: swaths ending square on the
+  /// border. Each of the two cells is asked instead whether its swaths end
+  /// on this border at all, and if they do how far a turn there reaches; the
+  /// deeper answer is the depth.
+  ///
+  /// Whether they end there is a count, covWidth / sin(angle) apart along the
+  /// border, and a count below one is not the same as none: over 31 fields it
+  /// read "none" on 207 borders swaths did end on. This is the narrowest
+  /// corridor worth trying, not one certainly wide enough.
+  /// @param field Cells that share borders, usually from a decomposition.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @param angs Swath track angle per cell, in \a field's order. Take them
+  ///        off a mainland already carved at turnExtent()'s depth, not off
+  ///        the bare cells -- that is where the swaths are generated.
+  /// @return Mainland area
+  F2CCells generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    const std::vector<double>& angs);
+
+  /// Ask the angles again on the cells an uncut border leaves joined.
+  ///
+  /// generateHeadlands(field, robot, turn, angs) reads \a angs cell by cell,
+  /// but a border it opens no corridor on is a border the two cells are one
+  /// piece across, and the swaths on that piece do not have to run the way
+  /// either half ran alone: two tall cells side by side make one wide cell.
+  /// Every border is measured again on the joined cells, which can leave a
+  /// border uncut that cell by cell looked like a corridor.
+  ///
+  /// The joined pieces are then asked whether the swath generator can sweep
+  /// them, one swath per track line. A piece it cuts into more swaths than
+  /// there are lines has a throat in it, and the borders that made the throat
+  /// are opened back up to turnExtent()'s depth.
+  /// @param field Cells that share borders, usually from a decomposition.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @param angs Swath track angle per cell, in \a field's order, as
+  ///        generateHeadlands(field, robot, turn, angs) takes them. They
+  ///        decide which borders are uncut, and so what is joined.
+  /// @param obj Objective the swath generators below are asked against.
+  /// @param sg_angle Asked which way the swaths run on a joined cell. Only
+  ///        the angle is taken, so a coarse step is enough.
+  /// @param sg_check Asked for the swaths themselves, to tell a piece with a
+  ///        throat from one that sweeps. May be the same as \a sg_angle.
+  /// @return Mainland area
+  F2CCells generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    const std::vector<double>& angs, f2c::obj::SGObjective& obj,
+    f2c::sg::SwathGeneratorBase& sg_angle,
+    f2c::sg::SwathGeneratorBase& sg_check);
+
   /// Open a corridor wide enough for \a n_swaths passes.
   /// @param field Borders of the field and the obstacles on it.
   /// @param swath_width Width of each headland swath.
@@ -103,12 +202,28 @@ class CorridorHL : public HeadlandGeneratorBase {
  private:
   CorridorShareMode share_mode_ {CorridorShareMode::ASYMMETRIC};
 
+  /// Floor on sin(angle) so a track along the border does not put the two
+  /// swath ends turnExtent() plans between infinitely far apart.
+  double min_track_sin_ {1e-2};
+
+  /// Part of turnExtent() a cell has to be wider than for its swath angle to
+  /// say anything about which of its borders turns reach.
+  double thin_cell_share_ {0.25};
+
   /// Tolerance the neighbour is buffered by to find the shared border.
   double tol_ {1e-3};
   /// Width the zero-width spur a difference can leave behind is opened by.
   double spur_ {1e-9};
   /// Tolerance two perimeters are compared with to count as the same size.
   double same_size_tol_ {1e-9};
+  /// Times the sweepability check may open borders back up before it gives
+  /// up: a throat the first pass does not clear is one the corridor cannot
+  /// reach, not one a third pass would.
+  int cert_passes_ {2};
+  /// Part of the coverage width two swaths have to be apart before they count
+  /// as two track lines rather than one line broken in two.
+  double line_tol_ {0.25};
+
   /// Shortest border kept as real: buffering the neighbour by tol_ turns a
   /// shared corner into a piece a few millimetres long on each edge that
   /// reaches it, and a border that short is a corner, not a corridor.
