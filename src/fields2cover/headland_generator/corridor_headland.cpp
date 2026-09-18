@@ -226,6 +226,14 @@ F2CCells CorridorHL::generateHeadlands(
 }
 
 F2CCells CorridorHL::generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    const std::vector<double>& angs, f2c::obj::SGObjective& obj,
+    f2c::sg::SwathGeneratorBase& sg_angle,
+    f2c::sg::SwathGeneratorBase& sg_check) {
+  return generateHeadlands(field, robot, turn, angs);
+}
+
+F2CCells CorridorHL::generateHeadlands(
     const F2CCells& field, double dist_headland) {
   return carveCorridors(field, corridorShares(field, share_mode_),
       [dist_headland](const CorridorShare&, size_t) { return dist_headland; },

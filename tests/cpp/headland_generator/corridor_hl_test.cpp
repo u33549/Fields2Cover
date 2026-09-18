@@ -14,6 +14,8 @@
 #include "fields2cover/headland_generator/corridor_headland.h"
 #include "fields2cover/path_planning/dubins_curves.h"
 #include "fields2cover/path_planning/reeds_shepp_curves.h"
+#include "fields2cover/swath_generator/brute_force.h"
+#include "fields2cover/objectives/sg_obj/n_swath_modified.h"
 
 TEST(fields2cover_hl_corridor_gen, onlyBetweenTouchingCells) {
   f2c::hg::CorridorHL corridor;
@@ -531,4 +533,88 @@ TEST(fields2cover_hl_corridor_gen, turnExtentStaysAboveTheTurningRadius) {
   const double shallow = corridor.turnExtent(robot, dubins, 5.0 * M_PI / 180.0);
   EXPECT_GT(shallow,
       std::sin(5.0 * M_PI / 180.0) * corridor.turnExtent(robot, dubins));
+}
+
+namespace {
+// A tall cell on each side of a border they both run their swaths up, and a
+// wide cell on top of the right one.
+F2CCells twoTallCellsAndAWideOneOnTop() {
+  F2CCells cells;
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(0,0), F2CPoint(50,0), F2CPoint(50,100),
+      F2CPoint(0,100), F2CPoint(0,0)})));
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(50,0), F2CPoint(110,0), F2CPoint(110,100),
+      F2CPoint(50,100), F2CPoint(50,0)})));
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(50,100), F2CPoint(110,100), F2CPoint(110,150),
+      F2CPoint(50,150), F2CPoint(50,100)})));
+  return cells;
+}
+}  // namespace
+
+TEST(fields2cover_hl_corridor_gen, guardedReAsksTheAngleOnTheCellsItJoined) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  f2c::sg::BruteForce bf;
+  f2c::sg::BruteForce bf_coarse;
+  bf_coarse.setStepAngle(5.0 * M_PI / 180.0);
+  f2c::obj::NSwathModified obj;
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  // Left and right are 50x100 and 60x100, so their swaths run up the border
+  // they share and neither turns on it. Top is 60x50, so its own swaths run
+  // along the border it shares with right.
+  F2CCells cells = twoTallCellsAndAWideOneOnTop();
+  const std::vector<double> angs {M_PI_2, M_PI_2, 0.0};
+  const double width =
+      corridor.turnExtent(robot, dubins) + 0.5 * robot.getWidth();
+  ASSERT_NEAR(width, 3.0, 1e-2);
+
+  // Asked cell by cell, right's swaths end head-on on its 60 m border with
+  // top, so a corridor is opened there; top has the smaller perimeter, so it
+  // gives all of it.
+  EXPECT_NEAR(corridor.generateHeadlands(cells, robot, dubins, angs).area(),
+      cells.area() - 60 * width, 1e-2);
+
+  // Nothing is carved between left and right, so they are one 110x100 cell --
+  // wider than it is tall. Its swaths run the other way now, along top's
+  // border instead of into it, and nobody turns there: no corridor at all.
+  F2CCells guarded = corridor.generateHeadlands(
+      cells, robot, dubins, angs, obj, bf_coarse, bf);
+  EXPECT_NEAR(guarded.area(), cells.area(), 1e-2);
+  EXPECT_EQ(guarded.size(), 2);
+}
+
+TEST(fields2cover_hl_corridor_gen, guardedKeepsTheCorridorWithNothingToJoin) {
+  f2c::hg::CorridorHL corridor;
+  f2c::pp::DubinsCurves dubins;
+  f2c::sg::BruteForce bf;
+  f2c::sg::BruteForce bf_coarse;
+  bf_coarse.setStepAngle(5.0 * M_PI / 180.0);
+  f2c::obj::NSwathModified obj;
+  F2CRobot robot(2.0, 10.0);
+  robot.setMinTurningRadius(2.0);
+
+  // Two 40x100 cells stacked: both run their swaths into the 40 m border they
+  // share, so a corridor is opened there and there is nothing to join. Asking
+  // the angles again on cells that were never joined has to change nothing.
+  F2CCells cells;
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(0,0), F2CPoint(40,0), F2CPoint(40,100),
+      F2CPoint(0,100), F2CPoint(0,0)})));
+  cells.addGeometry(F2CCell(F2CLinearRing({
+      F2CPoint(0,100), F2CPoint(40,100), F2CPoint(40,200),
+      F2CPoint(0,200), F2CPoint(0,100)})));
+  const std::vector<double> angs {M_PI_2, M_PI_2};
+  const double width =
+      corridor.turnExtent(robot, dubins) + 0.5 * robot.getWidth();
+
+  F2CCells guarded = corridor.generateHeadlands(
+      cells, robot, dubins, angs, obj, bf_coarse, bf);
+  EXPECT_NEAR(guarded.area(),
+      corridor.generateHeadlands(cells, robot, dubins, angs).area(), 1e-2);
+  EXPECT_NEAR(guarded.area(), cells.area() - 40 * width, 1e-2);
+  EXPECT_EQ(guarded.size(), 2);
 }

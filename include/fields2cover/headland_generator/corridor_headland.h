@@ -12,6 +12,8 @@
 #include "fields2cover/types.h"
 #include "fields2cover/headland_generator/headland_generator_base.h"
 #include "fields2cover/path_planning/turning_base.h"
+#include "fields2cover/swath_generator/swath_generator_base.h"
+#include "fields2cover/objectives/sg_obj/sg_objective.h"
 
 namespace f2c::hg {
 
@@ -147,6 +149,37 @@ class CorridorHL : public HeadlandGeneratorBase {
   F2CCells generateHeadlands(
     const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
     const std::vector<double>& angs);
+
+  /// Ask the angles again on the cells an uncut border leaves joined.
+  ///
+  /// generateHeadlands(field, robot, turn, angs) reads \a angs cell by cell,
+  /// but a border it opens no corridor on is a border the two cells are one
+  /// piece across, and the swaths on that piece do not have to run the way
+  /// either half ran alone: two tall cells side by side make one wide cell.
+  /// Every border is measured again on the joined cells, which can leave a
+  /// border uncut that cell by cell looked like a corridor.
+  ///
+  /// The joined pieces are then asked whether the swath generator can sweep
+  /// them, one swath per track line. A piece it cuts into more swaths than
+  /// there are lines has a throat in it, and the borders that made the throat
+  /// are opened back up to turnExtent()'s depth.
+  /// @param field Cells that share borders, usually from a decomposition.
+  /// @param robot Robot doing the coverage.
+  /// @param turn Planner that will drive the turns on this field.
+  /// @param angs Swath track angle per cell, in \a field's order, as
+  ///        generateHeadlands(field, robot, turn, angs) takes them. They
+  ///        decide which borders are uncut, and so what is joined.
+  /// @param obj Objective the swath generators below are asked against.
+  /// @param sg_angle Asked which way the swaths run on a joined cell. Only
+  ///        the angle is taken, so a coarse step is enough.
+  /// @param sg_check Asked for the swaths themselves, to tell a piece with a
+  ///        throat from one that sweeps. May be the same as \a sg_angle.
+  /// @return Mainland area
+  F2CCells generateHeadlands(
+    const F2CCells& field, const F2CRobot& robot, f2c::pp::TurningBase& turn,
+    const std::vector<double>& angs, f2c::obj::SGObjective& obj,
+    f2c::sg::SwathGeneratorBase& sg_angle,
+    f2c::sg::SwathGeneratorBase& sg_check);
 
   /// Open a corridor wide enough for \a n_swaths passes.
   /// @param field Borders of the field and the obstacles on it.
