@@ -216,6 +216,14 @@ class CorridorHL : public HeadlandGeneratorBase {
   double spur_ {1e-9};
   /// Tolerance two perimeters are compared with to count as the same size.
   double same_size_tol_ {1e-9};
+  /// Times the sweepability check may open borders back up before it gives
+  /// up: a throat the first pass does not clear is one the corridor cannot
+  /// reach, not one a third pass would.
+  int cert_passes_ {2};
+  /// Part of the coverage width two swaths have to be apart before they count
+  /// as two track lines rather than one line broken in two.
+  double line_tol_ {0.25};
+
   /// Shortest border kept as real: buffering the neighbour by tol_ turns a
   /// shared corner into a piece a few millimetres long on each edge that
   /// reaches it, and a border that short is a corner, not a corridor.
