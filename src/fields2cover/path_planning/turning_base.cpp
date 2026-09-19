@@ -15,6 +15,20 @@ namespace f2c::pp {
 
 namespace {
 
+// Straight-line distance between two points.
+//
+// Point::distance() hands both points to the geometry library, which costs
+// 382 ns against 5 ns here for the same double -- checked bit for bit over
+// 400k random pairs at field coordinates. Everything below asks for this once
+// per pair of states of every candidate turn, tens of millions of times for
+// one field, so it does the arithmetic itself. Distances to anything that is
+// not a point still go through the geometry.
+double pointDistance(const F2CPoint& a, const F2CPoint& b) {
+  const double dx = a.getX() - b.getX();
+  const double dy = a.getY() - b.getY();
+  return std::sqrt(dx * dx + dy * dy);
+}
+
 // Perpendicular distance from a point to the swath that runs from pos in
 // direction ang, for the first strip_length of it only.
 //
@@ -24,18 +38,22 @@ namespace {
 // beyond that is driving over standing crop, however well aligned it is.
 // Measured before this bound: Reeds-Shepp put a whole u-turn under the
 // boundary and half of it was excused.
-double distanceToSwath(const F2CPoint& p, const F2CPoint& pos, double ang,
-    double strip_length) {
-  const double dx = p.getX() - pos.getX();
-  const double dy = p.getY() - pos.getY();
-  const double ahead = dx * std::cos(ang) + dy * std::sin(ang);
+//
+// The swath's heading comes in already resolved into its cosine and sine:
+// this runs twice per sample of every candidate turn, and computing the same
+// two trigonometric functions there cost more than everything else it does.
+double distanceToSwath(double px, double py, const F2CPoint& pos,
+    double cos_ang, double sin_ang, double strip_length) {
+  const double dx = px - pos.getX();
+  const double dy = py - pos.getY();
+  const double ahead = dx * cos_ang + dy * sin_ang;
   if (ahead > strip_length) {
     return std::numeric_limits<double>::infinity();
   }
   if (ahead < 0.0) {
     return std::hypot(dx, dy);  // behind the swath end: measure to the end
   }
-  return std::fabs(-dx * std::sin(ang) + dy * std::cos(ang));
+  return std::fabs(-dx * sin_ang + dy * cos_ang);
 }
 
 // The point test runs on every sample of every candidate turn -- on the order
@@ -56,25 +74,32 @@ void measureOutside(const F2CPath& path, const F2CCells& free_space,
   *length_out = 0.0;
   *deepest_out = 0.0;
   *in_swath_out = 0.0;
+  const double cos_in = std::cos(in_ang), sin_in = std::sin(in_ang);
+  const double cos_out = std::cos(out_ang), sin_out = std::sin(out_ang);
   const auto& states = path.getStates();
   for (size_t i = 0; i + 1 < states.size(); ++i) {
-    const F2CPoint a = states[i].point;
-    const F2CPoint b = states[i + 1].point;
-    const double len = a.distance(b);
+    // A copy of a point is a heap-allocated OGRPoint of its own, and this
+    // walks every state of every candidate, so nothing here is copied: the
+    // samples stay plain coordinates and only the rare one that has already
+    // fallen off the ground is made into a point to measure the depth with.
+    const F2CPoint& a = states[i].point;
+    const F2CPoint& b = states[i + 1].point;
+    const double len = pointDistance(a, b);
     if (len <= 0.0) {
       continue;
     }
     const int n = std::max(1, static_cast<int>(std::ceil(len / step)));
     for (int j = 0; j < n; ++j) {
       const double t = (j + 0.5) / n;
-      const F2CPoint p {a.getX() + (b.getX() - a.getX()) * t,
-                        a.getY() + (b.getY() - a.getY()) * t};
-      if (free_area.holds(p.getX(), p.getY())) {
+      const double px = a.getX() + (b.getX() - a.getX()) * t;
+      const double py = a.getY() + (b.getY() - a.getY()) * t;
+      if (free_area.holds(px, py)) {
         continue;
       }
       if (half_swath > 0.0 &&
-          std::min(distanceToSwath(p, in_pos, in_ang, strip_length),
-                   distanceToSwath(p, out_pos, out_ang, strip_length))
+          std::min(
+              distanceToSwath(px, py, in_pos, cos_in, sin_in, strip_length),
+              distanceToSwath(px, py, out_pos, cos_out, sin_out, strip_length))
               <= half_swath) {
         *in_swath_out += len / n;
         continue;
@@ -83,9 +108,19 @@ void measureOutside(const F2CPath& path, const F2CCells& free_space,
       if (*length_out > abort_over) {
         return;
       }
-      *deepest_out = std::max(*deepest_out, p.distance(free_space));
+      *deepest_out =
+          std::max(*deepest_out, F2CPoint(px, py).distance(free_space));
     }
   }
+}
+
+// Radius two consecutive states turn at, infinite where they do not turn.
+double pairRadius(const f2c::types::PathState& p,
+    const f2c::types::PathState& q) {
+  const double ds = pointDistance(p.point, q.point);
+  const double da = F2CPoint::getAngleDiffAbs(p.angle, q.angle);
+  return (da > 1e-6 && ds > 1e-9) ?
+      ds / da : std::numeric_limits<double>::infinity();
 }
 
 // Smallest radius the path actually turns at. A turn planner keeps its own
@@ -94,14 +129,28 @@ double minRadius(const F2CPath& path) {
   double r = std::numeric_limits<double>::infinity();
   const auto& states = path.getStates();
   for (size_t i = 0; i + 1 < states.size(); ++i) {
-    const double ds = states[i].point.distance(states[i + 1].point);
-    const double da = F2CPoint::getAngleDiffAbs(
-        states[i].angle, states[i + 1].angle);
-    if (da > 1e-6 && ds > 1e-9) {
-      r = std::min(r, ds / da);
-    }
+    r = std::min(r, pairRadius(states[i], states[i + 1]));
   }
   return r;
+}
+
+// The same for one path driven straight into another, and the length of the
+// two together. A candidate is only ever asked for these two numbers, and
+// joining the paths to read them off copied every state a third time -- every
+// point of it a heap allocation -- for thousands of candidates per turn.
+double minRadius(const F2CPath& a, const F2CPath& b) {
+  return std::min({minRadius(a), minRadius(b),
+      pairRadius(a.back(), b.getStates().front())});
+}
+
+double joinedLength(const F2CPath& a, const F2CPath& b) {
+  // Summed in one running total, the way the joined path sums it: adding the
+  // two lengths instead rounds differently and would reorder the ladder.
+  double len = a.length();
+  for (const auto& s : b) {
+    len += std::fabs(s.len);
+  }
+  return len;
 }
 
 }  // namespace
@@ -152,8 +201,20 @@ F2CPath TurningBase::plainTurn(const F2CRobot& robot,
         s.point.setY(-s.point.getY());
         s.angle = F2CPoint::mod_2pi(-s.angle);});
   }
+  // Rewritten in place. Going through rotateFromPoint() built three temporary
+  // points per state, each one a heap-allocated OGRPoint, and asked for the
+  // same sine and cosine again on every one of them; a field's candidate
+  // turns run to tens of millions of states.
+  const double rot_sin = std::sin(rot_angle);
+  const double rot_cos = std::cos(rot_angle);
+  const double off_x = start_pos.getX();
+  const double off_y = start_pos.getY();
+  const double off_z = start_pos.getZ();
   for (auto&& s : path) {
-    s.point = F2CPoint(.0, .0).rotateFromPoint(rot_angle, s.point) + start_pos;
+    const double px = s.point.getX();
+    const double py = s.point.getY();
+    s.point.setPoint(px * rot_cos - py * rot_sin + off_x,
+                     px * rot_sin + py * rot_cos + off_y, off_z);
     s.angle = F2CPoint::mod_2pi(s.angle + rot_angle);
   }
 
@@ -221,10 +282,10 @@ std::vector<std::pair<F2CPoint, double>> TurningBase::concaveCorners(
         // corner has the region on the narrow side, a concave one on the wide
         // side. Asking the region rather than the winding keeps this immune to
         // whichever orientation the ring came back with.
-        const bool narrow_in = region.isPointIn(
-            F2CPoint(here.getX() + eps * mx, here.getY() + eps * my));
-        const bool wide_in = region.isPointIn(
-            F2CPoint(here.getX() - eps * mx, here.getY() - eps * my));
+        const bool narrow_in = area.holds(
+            here.getX() + eps * mx, here.getY() + eps * my);
+        const bool wide_in = area.holds(
+            here.getX() - eps * mx, here.getY() - eps * my);
         if (narrow_in || !wide_in) {
           continue;
         }
@@ -377,7 +438,12 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
       const F2CPoint way {
           corner.first.getX() + offset * std::cos(corner.second),
           corner.first.getY() + offset * std::sin(corner.second)};
-      if (!this->free_space_.isPointIn(way)) { continue; }
+      // Through the prepared ground, like every other point test here: this
+      // one runs once per offset of every corner of every turn, and asking
+      // the geometry for it was 5% of planPath on ee_field_155. A waypoint
+      // sits a tenth of a metre at least inside a corner, so the boundary
+      // case the prepared area leaves undefined cannot arise.
+      if (!this->free_area_.holds(way.getX(), way.getY())) { continue; }
       for (int side = 0; side < 2; ++side) {
         const double way_angle = corner.second + (side ? -M_PI_2 : M_PI_2);
         const F2CPath first =
@@ -386,11 +452,9 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
         const F2CPath second =
             plainTurn(robot, way, way_angle, end_pos, end_angle);
         if (second.size() < 2) { continue; }
-        F2CPath joined = first;
-        joined += second;
-        if (minRadius(joined) < 0.95 * radius) { continue; }
-        candidates.push_back(
-            {way.getX(), way.getY(), way_angle, joined.length()});
+        if (minRadius(first, second) < 0.95 * radius) { continue; }
+        candidates.push_back({way.getX(), way.getY(), way_angle,
+            joinedLength(first, second)});
       }
     }
   }
