@@ -185,6 +185,8 @@ class TurningBase {
   F2CCells free_space_;
   /// The same ground, read once so the sampling below can ask it cheaply.
   f2c::PreparedArea free_area_;
+  /// Where a turn may leave the ground, worked out once per free space.
+  std::vector<std::pair<F2CPoint, double>> free_corners_;
   F2CCells preferred_space_;
   f2c::PreparedArea preferred_area_;
   double swath_width_ {0.0};

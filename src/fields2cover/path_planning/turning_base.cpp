@@ -180,6 +180,8 @@ void TurningBase::correctPath(F2CPath& path, const F2CPoint& start_pos,
 
 std::vector<std::pair<F2CPoint, double>> TurningBase::concaveCorners(
     const F2CCells& region, double eps) {
+  // Two point tests per corner, and a field's ground has hundreds of them.
+  const f2c::PreparedArea area(region);
   std::vector<std::pair<F2CPoint, double>> corners;
   for (auto&& cell : region) {
     for (auto&& ring : cell) {
@@ -365,7 +367,7 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
     double x, y, angle, length;
   };
   std::vector<Candidate> candidates;
-  for (const auto& corner : concaveCorners(this->free_space_)) {
+  for (const auto& corner : this->free_corners_) {
     if (start_pos.distance(corner.first) +
         corner.first.distance(end_pos) > reach) {
       continue;
@@ -463,6 +465,9 @@ void TurningBase::setFreeSpace(const F2CCells& free_space) {
   this->free_space_ = free_space;
   // Read once here rather than on every sample of every candidate turn.
   this->free_area_ = f2c::PreparedArea(free_space);
+  // The corners do not move while the ground does not, and createTurn asked
+  // for them again on every single turn.
+  this->free_corners_ = concaveCorners(free_space);
 }
 
 double TurningBase::getSwathWidth() const {
