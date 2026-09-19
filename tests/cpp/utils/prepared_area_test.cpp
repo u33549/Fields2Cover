@@ -6,7 +6,11 @@
 
 #include <gtest/gtest.h>
 #include <array>
+#include <fstream>
+#include <sstream>
+#include <string>
 #include <vector>
+#include "fields2cover/utils/transformation.h"
 #include "fields2cover/types.h"
 #include "fields2cover/utils/prepared_area.h"
 
@@ -74,4 +78,59 @@ TEST(fields2cover_utils_prepared_area, handsBackEveryRingEdge) {
   area.edges(&edges);
   // Four sides of the square and four of the hole.
   EXPECT_EQ(edges.size(), 8);
+}
+
+TEST(fields2cover_utils_prepared_area, agreesWithTheCellsAwayFromTheirRings) {
+  // The point of the type is to answer what Cells::isPointIn answers, only
+  // without going to GEOS. On a real, heavily digitised border the two have to
+  // agree everywhere that is not on a ring, where the answer is undefined
+  // here and GEOS calls it outside.
+  std::ifstream f(std::string(DATA_PATH) + "ee_field_130.wkt");
+  ASSERT_TRUE(f.is_open()) << "ee_field_130.wkt not found";
+  std::stringstream ss;
+  ss << f.rdbuf();
+  F2CCell raw;
+  raw.importFromWkt(ss.str());
+  ASSERT_GT(raw.area(), 0);
+  F2CField field(F2CCells(raw), "ee_field_130");
+  field.setCRS("EPSG:4326");
+  f2c::Transform::transformToUTM(field);
+  const F2CCells cells = field.getField();
+
+  F2CMultiLineString rings;
+  for (size_t i = 0; i < cells.size(); ++i) {
+    const F2CCell c = cells.getGeometry(i);
+    rings.addGeometry(F2CLineString(c.getExteriorRing()));
+    for (size_t r = 1; r < c.size(); ++r) {
+      rings.addGeometry(F2CLineString(c.getInteriorRing(r - 1)));
+    }
+  }
+
+  const f2c::PreparedArea area(cells);
+  const F2CPoint lo = cells.getDimMinX() < 1e17
+      ? F2CPoint(cells.getDimMinX(), cells.getDimMinY())
+      : F2CPoint(0, 0);
+  const double w = cells.getDimMaxX() - cells.getDimMinX();
+  const double h = cells.getDimMaxY() - cells.getDimMinY();
+
+  int checked = 0, disagreed = 0, inside = 0;
+  for (int i = 0; i <= 80; ++i) {
+    for (int j = 0; j <= 80; ++j) {
+      const F2CPoint p(lo.getX() + w * i / 80.0, lo.getY() + h * j / 80.0);
+      if (p.distance(rings) < 1e-3) {
+        continue;      // on a ring: undefined here, outside for GEOS
+      }
+      const bool ours = area.holds(p.getX(), p.getY());
+      if (ours != cells.isPointIn(p)) {
+        ++disagreed;
+      }
+      if (ours) {
+        ++inside;
+      }
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 5000) << "the grid has to actually cover the field";
+  EXPECT_GT(inside, 500) << "and land inside it often enough to mean something";
+  EXPECT_EQ(disagreed, 0);
 }

@@ -56,6 +56,7 @@ class PreparedArea {
     std::vector<Ring> holes;
     bool holds(double px, double py) const;
   };
+  static void readRing(const F2CLinearRing& ring, Ring* out);
   std::vector<Poly> polys_;
 };
 
