@@ -170,7 +170,7 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
         const double step = (sample_step_ > 0.0) ? sample_step_ : 0.5;
         const double reach = 2.0 * entry;
         const double dx = std::cos(aways[e]), dy = std::sin(aways[e]);
-        const Area area(cells);
+        const f2c::PreparedArea area(cells);
         F2CPoint found = ends[e];
         bool on = false;
         double reached = 0.0;
@@ -390,7 +390,7 @@ bool meet(const Line& a, const Line& b, F2CPoint* out) {
 }
 
 // How far the ground reaches from a point on its border, along `n`.
-double roomFrom(const Area& ground, const F2CPoint& foot, double nx, double ny,
+double roomFrom(const f2c::PreparedArea& ground, const F2CPoint& foot, double nx, double ny,
     double reach) {
   auto in = [&](double t) {
     return ground.holds(foot.getX() + t * nx, foot.getY() + t * ny);
@@ -413,7 +413,7 @@ double roomFrom(const Area& ground, const F2CPoint& foot, double nx, double ny,
   return inside;
 }
 
-bool onGround(const Area& ground, const F2CPoint& a, const F2CPoint& b,
+bool onGround(const f2c::PreparedArea& ground, const F2CPoint& a, const F2CPoint& b,
     double step) {
   const double len = a.distance(b);
   if (len < 1e-9) {
@@ -440,7 +440,7 @@ struct Border {
 };
 
 Border borderOf(const std::vector<std::array<double, 4>>& edges,
-    const Area& ground, const F2CPoint& a, const F2CPoint& b) {
+    const f2c::PreparedArea& ground, const F2CPoint& a, const F2CPoint& b) {
   Border w;
   const double len = a.distance(b);
   if (len < 1e-9) {
@@ -516,7 +516,7 @@ F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
   for (size_t i = 0; i < n; ++i) {
     p.push_back(mp.getGeometry(i));
   }
-  const Area ground(cells);
+  const f2c::PreparedArea ground(cells);
   std::vector<std::array<double, 4>> edges;
   ground.edges(&edges);
 
