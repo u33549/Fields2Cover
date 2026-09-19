@@ -38,7 +38,12 @@ double distanceToSwath(const F2CPoint& p, const F2CPoint& pos, double ang,
   return std::fabs(-dx * std::sin(ang) + dy * std::cos(ang));
 }
 
+// The point test runs on every sample of every candidate turn -- on the order
+// of a hundred million times for one field -- so it goes through the prepared
+// area. The depth below only runs on samples that already fell outside, which
+// is rare, so that one still asks the geometry.
 void measureOutside(const F2CPath& path, const F2CCells& free_space,
+    const f2c::PreparedArea& free_area,
     double step, double half_swath, double strip_length,
     const F2CPoint& in_pos, double in_ang,
     const F2CPoint& out_pos, double out_ang,
@@ -64,7 +69,7 @@ void measureOutside(const F2CPath& path, const F2CCells& free_space,
       const double t = (j + 0.5) / n;
       const F2CPoint p {a.getX() + (b.getX() - a.getX()) * t,
                         a.getY() + (b.getY() - a.getY()) * t};
-      if (free_space.isPointIn(p)) {
+      if (free_area.holds(p.getX(), p.getY())) {
         continue;
       }
       if (half_swath > 0.0 &&
@@ -250,7 +255,8 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
   // Does it fit? -- the cheap question: stop at the first metre off the ground.
   auto fits = [&](const F2CPath& p) {
     double out = 0.0, deep = 0.0, in_swath = 0.0;
-    measureOutside(p, this->free_space_, this->discretization * 10.0,
+    measureOutside(p, this->free_space_, this->free_area_,
+          this->discretization * 10.0,
         half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
         &out, &deep, &in_swath, 0.05);
     return out <= 0.05;
@@ -264,7 +270,8 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
       return;
     }
     double deep = 0.0, in_swath = 0.0;
-    measureOutside(p, this->preferred_space_, this->discretization * 10.0,
+    measureOutside(p, this->preferred_space_, this->preferred_area_,
+          this->discretization * 10.0,
         half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
         &r->length_off_preferred, &deep, &in_swath);
     r->in_preferred = r->length_off_preferred <= 0.05;
@@ -273,13 +280,15 @@ F2CPath TurningBase::createTurn(const F2CRobot& robot,
   auto fitsPreferred = [&](const F2CPath& p) {
     if (this->preferred_space_.isEmpty()) { return true; }
     double out = 0.0, deep = 0.0, in_swath = 0.0;
-    measureOutside(p, this->preferred_space_, this->discretization * 10.0,
+    measureOutside(p, this->preferred_space_, this->preferred_area_,
+          this->discretization * 10.0,
         half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
         &out, &deep, &in_swath, 0.05);
     return out <= 0.05;
   };
   auto measure = [&](const F2CPath& p, TurnReport* r) {
-    measureOutside(p, this->free_space_, this->discretization * 10.0,
+    measureOutside(p, this->free_space_, this->free_area_,
+          this->discretization * 10.0,
         half_swath, strip_length, start_pos, in_ang, end_pos, end_angle,
         &r->length_outside, &r->deepest_outside, &r->length_in_swath);
     r->inside = r->length_outside <= 0.05;
@@ -447,10 +456,13 @@ const F2CCells& TurningBase::getPreferredSpace() const {
 
 void TurningBase::setPreferredSpace(const F2CCells& preferred) {
   this->preferred_space_ = preferred;
+  this->preferred_area_ = f2c::PreparedArea(preferred);
 }
 
 void TurningBase::setFreeSpace(const F2CCells& free_space) {
   this->free_space_ = free_space;
+  // Read once here rather than on every sample of every candidate turn.
+  this->free_area_ = f2c::PreparedArea(free_space);
 }
 
 double TurningBase::getSwathWidth() const {

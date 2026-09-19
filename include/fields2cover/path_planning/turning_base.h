@@ -14,6 +14,7 @@
 #include <limits>
 #include <functional>
 #include "fields2cover/types.h"
+#include "fields2cover/utils/prepared_area.h"
 #include "fields2cover/utils/random.h"
 
 namespace f2c::pp {
@@ -182,7 +183,10 @@ class TurningBase {
   double discretization {0.01};
   bool using_cache {true};
   F2CCells free_space_;
+  /// The same ground, read once so the sampling below can ask it cheaply.
+  f2c::PreparedArea free_area_;
   F2CCells preferred_space_;
+  f2c::PreparedArea preferred_area_;
   double swath_width_ {0.0};
   double waypoint_offset_ {1.0};
 };
