@@ -7,12 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+### Added
 - `SingleCellSwathsOrderBase::setStartAndEndPoint`, so BOUSTROPHEDON, SNAKE, SPIRAL and CUSTOM can start where the machine actually stands. The route begins at the cell nearest that point and returns to it, the same contract `RoutePlannerBase` already offered.
 - `SingleCellSwathsOrderBase::genRoute`, which gives BOUSTROPHEDON, SNAKE, SPIRAL and CUSTOM a route whose connections are driven through the headland. `genSortedSwaths` is unchanged and still returns the bare order; a bare order ignores the boundary, so a snake or spiral skip cuts over covered ground on a field that is not convex.
 - `SingleCellSwathsOrderBase::genSortedSwaths` overload taking `F2CSwathsByCells`, which orders each cell on its own so a pattern never runs across cells.
 - `f2c::rp::RouteGeneratorBase`, the common interface of both route planner families. BOUSTROPHEDON, SNAKE, SPIRAL, CUSTOM and the TSP planner all answer `genRoute(cells, swaths_by_cells, d_tol)`, so a caller can hold any of them behind one type instead of branching on the mode. `RoutePlannerBase` keeps its existing `genRoute` overload, which is still the way to reach the optimizer settings.
 - `f2c::pp::TurningBase::setFreeSpace`, which tells a turn planner where it may drive. A turn planner answers in free space: it is optimal there and keeps its radius, but it does not know where the crop is, so on a headland only as wide as the turn needs it leaves the drivable ground exactly where that ground turns inward. Given the ground, the shortest turn that stays on it is kept: another of the planner's own turns where it has one -- `alternativeTurns`, which Reeds-Shepp answers with its forward turn, since its shortest reverses over the crop for no gain -- and otherwise the turn split in two around a waypoint set inside a concave corner of the ground (`concaveCorners`). `createTurn` takes an optional `TurnReport` saying what the turn had to do and, when none fits, how deep the one it returns goes. `setSwathWidth` tells the planner how wide the swaths it joins are, so ground those swaths cover anyway is not counted against the turn, and `setWaypointOffset` how far inside a corner the waypoint sits. Left unset, every planner answers exactly as before.
 - `f2c::rp::FreeSpaceRoutePlanner::setTurnRoom` and `getTurnRoom`, the room a connection's corners are given for the turn that follows them. The clearance is a price on the graph; this is the geometry of the turn, and the two are the same number only by habit. Zero leaves every connection where the graph put it; left unset, the clearance answers for it, so a caller that only sets a clearance sees no difference.
+- `f2c::decomp::simplifyForDecomposition`, which drops border detail below a
+  share of the robot's coverage width before a field is decomposed. A
+  decomposition splits a field wherever its border turns back on itself, and a
+  digitised border does that on details of a few centimetres: the field comes
+  back cut into pieces that exist only in the survey, each paying for a
+  headland it does not need. Over 305 real fields and two robots this returns
+  30% fewer cells while the area moves by less than a tenth of a percent, and
+  every arm of a five-way headland comparison gains from it. The result is not
+  clipped to the input -- simplifying moves the border both ways -- so it takes
+  ground already inside the field, not the raw boundary.
 
 ### Fixed
 - `F2CGraph2D::getNodes` handed its nodes back in the order an `unordered_map` happened to hold them. That is not the order the node ids were handed out in, and it is not the same order on another build, yet the ids `getEdges` reports index exactly that vector -- so a caller resolving an edge through it joined the wrong pair of points, silently, and differently on another machine. The nodes now come back in id order, so `getNodes()[i]` is `indexToNode(i)`.
