@@ -32,9 +32,10 @@ TEST(fields2cover_pp_dubins, random_points) {
   robot.setMaxCurv(1.0);
   robot.setMaxDiffCurv(1.0);
   f2c::pp::DubinsCurves turn;
+  EXPECT_FALSE(turn.getUsingCache());
+  turn.setUsingCache(true);
   EXPECT_TRUE(turn.getUsingCache());
   turn.setUsingCache(false);
-  EXPECT_FALSE(turn.getUsingCache());
   const double step = 0.1;
   for (double ang = step; ang < boost::math::constants::pi<double>(); ang += step) {
     F2CPoint start(0.0, 0.0), end(4.0, 0.0);

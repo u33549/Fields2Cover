@@ -181,7 +181,7 @@ class TurningBase {
   // ints are used multiplied by 1000.
   std::map<std::vector<int>, F2CPath> path_cache_;
   double discretization {0.01};
-  bool using_cache {true};
+  bool using_cache {false};
   F2CCells free_space_;
   /// The same ground, read once so the sampling below can ask it cheaply.
   f2c::PreparedArea free_area_;
