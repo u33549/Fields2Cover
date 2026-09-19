@@ -282,10 +282,10 @@ std::vector<std::pair<F2CPoint, double>> TurningBase::concaveCorners(
         // corner has the region on the narrow side, a concave one on the wide
         // side. Asking the region rather than the winding keeps this immune to
         // whichever orientation the ring came back with.
-        const bool narrow_in = region.isPointIn(
-            F2CPoint(here.getX() + eps * mx, here.getY() + eps * my));
-        const bool wide_in = region.isPointIn(
-            F2CPoint(here.getX() - eps * mx, here.getY() - eps * my));
+        const bool narrow_in = area.holds(
+            here.getX() + eps * mx, here.getY() + eps * my);
+        const bool wide_in = area.holds(
+            here.getX() - eps * mx, here.getY() - eps * my);
         if (narrow_in || !wide_in) {
           continue;
         }
