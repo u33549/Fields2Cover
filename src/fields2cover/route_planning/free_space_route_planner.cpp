@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 #include "fields2cover/route_planning/free_space_route_planner.h"
+#include "fields2cover/utils/prepared_area.h"
 
 namespace f2c::rp {
 
@@ -21,101 +22,6 @@ namespace {
 // A ring flattened into plain arrays, with its box. Asking a polygon whether it
 // holds a point is the inner loop of a quadratic graph, so it is worth keeping
 // out of the geometry library.
-struct Ring {
-  std::vector<double> x, y;
-  double x0 {1e18}, x1 {-1e18}, y0 {1e18}, y1 {-1e18};
-
-  void add(double px, double py) {
-    x.push_back(px);
-    y.push_back(py);
-    x0 = std::min(x0, px); x1 = std::max(x1, px);
-    y0 = std::min(y0, py); y1 = std::max(y1, py);
-  }
-
-  bool holds(double px, double py) const {
-    if (px < x0 || px > x1 || py < y0 || py > y1) {
-      return false;
-    }
-    bool in = false;
-    const size_t n = x.size();
-    for (size_t i = 0, j = n - 1; i < n; j = i++) {
-      if (((y[i] > py) != (y[j] > py)) &&
-          (px < (x[j] - x[i]) * (py - y[i]) / (y[j] - y[i]) + x[i])) {
-        in = !in;
-      }
-    }
-    return in;
-  }
-};
-
-struct Poly {
-  Ring outer;
-  std::vector<Ring> holes;
-
-  bool holds(double px, double py) const {
-    if (!outer.holds(px, py)) {
-      return false;
-    }
-    for (const auto& h : holes) {
-      if (h.holds(px, py)) {
-        return false;
-      }
-    }
-    return true;
-  }
-};
-
-class Area {
- public:
-  explicit Area(const F2CCells& cs) {
-    for (size_t i = 0; i < cs.size(); ++i) {
-      const F2CCell c = cs.getGeometry(i);
-      Poly p;
-      readRing(c.getExteriorRing(), &p.outer);
-      for (size_t r = 0; r + 1 < c.size(); ++r) {
-        Ring h;
-        readRing(c.getInteriorRing(r), &h);
-        p.holes.push_back(std::move(h));
-      }
-      polys_.push_back(std::move(p));
-    }
-  }
-
-  bool holds(double px, double py) const {
-    for (const auto& p : polys_) {
-      if (p.holds(px, py)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  bool isEmpty() const { return polys_.empty(); }
-
-  // Every ring edge, for the crossing test.
-  void edges(std::vector<std::array<double, 4>>* out) const {
-    for (const auto& p : polys_) {
-      pushRing(p.outer, out);
-      for (const auto& h : p.holes) {
-        pushRing(h, out);
-      }
-    }
-  }
-
- private:
-  static void readRing(const F2CLinearRing& r, Ring* out) {
-    for (size_t k = 0; k < r.size(); ++k) {
-      const F2CPoint v = r.getGeometry(k);
-      out->add(v.getX(), v.getY());
-    }
-  }
-  static void pushRing(const Ring& r, std::vector<std::array<double, 4>>* out) {
-    for (size_t i = 0; i + 1 < r.x.size(); ++i) {
-      out->push_back({r.x[i], r.y[i], r.x[i + 1], r.y[i + 1]});
-    }
-  }
-  std::vector<Poly> polys_;
-};
 
 double side(double ox, double oy, double ax, double ay, double bx, double by) {
   return (ax - ox) * (by - oy) - (ay - oy) * (bx - ox);
@@ -206,7 +112,7 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
     return g;
   }
 
-  const Area ground(cells);
+  const f2c::PreparedArea ground(cells);
   std::vector<std::array<double, 4>> border;
   ground.edges(&border);
 
@@ -215,7 +121,7 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
   const bool has_band = (clearance_ > 0.0 && clearance_cost_ > 0.0);
   const F2CCells inner =
       has_band ? cells.buffer(-clearance_) : F2CCells();
-  const Area room(inner);
+  const f2c::PreparedArea room(inner);
 
   // Nodes: every swath end, and every corner of the ground.
   std::vector<F2CPoint> nodes;
@@ -264,7 +170,7 @@ F2CGraph2D FreeSpaceRoutePlanner::createShortestGraph(
         const double step = (sample_step_ > 0.0) ? sample_step_ : 0.5;
         const double reach = 2.0 * entry;
         const double dx = std::cos(aways[e]), dy = std::sin(aways[e]);
-        const Area area(cells);
+        const f2c::PreparedArea area(cells);
         F2CPoint found = ends[e];
         bool on = false;
         double reached = 0.0;
@@ -484,7 +390,7 @@ bool meet(const Line& a, const Line& b, F2CPoint* out) {
 }
 
 // How far the ground reaches from a point on its border, along `n`.
-double roomFrom(const Area& ground, const F2CPoint& foot, double nx, double ny,
+double roomFrom(const f2c::PreparedArea& ground, const F2CPoint& foot, double nx, double ny,
     double reach) {
   auto in = [&](double t) {
     return ground.holds(foot.getX() + t * nx, foot.getY() + t * ny);
@@ -507,7 +413,7 @@ double roomFrom(const Area& ground, const F2CPoint& foot, double nx, double ny,
   return inside;
 }
 
-bool onGround(const Area& ground, const F2CPoint& a, const F2CPoint& b,
+bool onGround(const f2c::PreparedArea& ground, const F2CPoint& a, const F2CPoint& b,
     double step) {
   const double len = a.distance(b);
   if (len < 1e-9) {
@@ -534,7 +440,7 @@ struct Border {
 };
 
 Border borderOf(const std::vector<std::array<double, 4>>& edges,
-    const Area& ground, const F2CPoint& a, const F2CPoint& b) {
+    const f2c::PreparedArea& ground, const F2CPoint& a, const F2CPoint& b) {
   Border w;
   const double len = a.distance(b);
   if (len < 1e-9) {
@@ -610,7 +516,7 @@ F2CMultiPoint alignConnection(const F2CMultiPoint& mp, const F2CCells& cells,
   for (size_t i = 0; i < n; ++i) {
     p.push_back(mp.getGeometry(i));
   }
-  const Area ground(cells);
+  const f2c::PreparedArea ground(cells);
   std::vector<std::array<double, 4>> edges;
   ground.edges(&edges);
 
